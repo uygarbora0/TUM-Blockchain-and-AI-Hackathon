@@ -118,10 +118,14 @@ export function createGuardianServer({ chain, agents, market }) {
   const server = createServer(async (req, res) => {
     try {
       const port = server.address()?.port;
-      const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+      // PUBLIC_HOST optionally exposes the dashboard through a reverse proxy/tunnel (e.g. cloudflared).
+      // Leave it unset for the default loopback-only mode.
+      const publicHost = process.env.PUBLIC_HOST?.trim();
+      const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`, ...(publicHost ? [publicHost] : [])];
       if (!allowedHosts.includes(req.headers.host)) return json(res, 403, { error: 'Only local dashboard requests are accepted.' });
       const origin = req.headers.origin;
-      if (origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-origin requests are not allowed.' });
+      const allowedOrigins = allowedHosts.flatMap(h => [`http://${h}`, `https://${h}`]);
+      if (origin && !allowedOrigins.includes(origin)) return json(res, 403, { error: 'Cross-origin requests are not allowed.' });
       // Block cross-site scripted requests (CSRF), but allow a user to follow a link
       // into the dashboard: a top-level GET navigation is safe and carries no credentials-based risk.
       const topLevelNavigation = req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate';
