@@ -27,7 +27,7 @@ export function integrationStatus({ root = process.cwd(), env = process.env } = 
   }
   return {
     network: 'Cardano Preprod',
-    lending: { status: 'simulation', label: 'Guardian Sandbox', detail: 'No live lending adapter or wallet spending authority is configured.' },
+    lending: { status: 'preprod', label: 'Guardian lending contract', detail: 'Loans, oracle and rescues run on Cardano Preprod through the dashboard.' },
     sokosumi: { status: env.COWORKER_ID ? 'configured' : 'not_configured', configured: Boolean(env.COWORKER_ID), verified: false, detail: 'Configuration does not establish a completed task or active worker.' },
     masumi: { status: registrationError ? 'invalid_state' : registered ? 'registration_saved' : 'not_configured', registered, paymentsEnabled: env.PAID_TASKS_ENABLED === 'true', sellerPaymentVerified: evidence.length > 0, detail: 'Registration is read from local setup state. Only worker-verified seller receipts count as payment evidence.' },
     model: { configured: Boolean(env.ZAI_API_KEY && env.ZAI_BASE_URL && env.ZAI_MODEL), detail: 'Structured risk jobs do not need a model key.' },

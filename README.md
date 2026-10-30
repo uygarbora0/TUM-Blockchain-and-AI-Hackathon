@@ -43,6 +43,33 @@ Keep this terminal open while you use the worker.
 For extra protection, consider [Socket Firewall](https://socket.dev/products/socket-firewall) for package installs.
 If installed, prefix an install command with `sfw`, such as `sfw npm ci`.
 
+## Guardian on Preprod
+
+`npm run dev` opens the dashboard at http://127.0.0.1:3000. Nothing in it is simulated:
+prices come from Kraken, CoinGecko and Coinbase, and every balance, loan and rescue is a Cardano Preprod transaction.
+
+Setup (the dashboard walks you through it):
+
+1. Set `BLOCKFROST_API_KEY_PREPROD` in `.env` and start `npm run dev`.
+2. Connect Lace or Eternl on Preprod with test ADA from the faucet.
+3. Fund the agent fee wallet and the oracle operator (one wallet signature).
+4. Deploy the price oracle at the live market price (signed by the oracle key).
+5. Open a loan: lock ADA, mint tUSD. Opening near the limit (for example health 1.30 with trigger 1.32) lets real market moves trigger a rescue.
+6. Sign the mandate and fund the vault, test it, then start the agent.
+
+While running, the agent checks every 60 seconds. It republishes the oracle on a 0.5% move or every 20 minutes,
+and below the trigger it moves ADA from the vault into your loan as collateral, capped by the mandate.
+
+Contracts live in `onchain/validators/` (Aiken, Plutus V3):
+
+- `oracle.ak`: one-shot NFT price feed; only the operator key updates it, with an in-range timestamp.
+- `lending.ak`: loans and tUSD. Anyone may add collateral or repay; only the borrower may borrow more, withdraw or close; anyone may liquidate below health 1.0 at a price under 30 minutes old.
+- `mandate_vault.ak`: rescue funds. The agent pays only allowed recipients (your wallet and your loan), within per-transaction, per-period and expiry limits, measured as net flow. The owner can withdraw everything at any time.
+
+The agent key, oracle key, deployment record and agent log are created in `.local/guardian/` (mode 600) and never committed.
+Back them up while they hold test ADA. After editing a contract, run `npm run contract` (Aiken `v1.1.24`) and commit `onchain/plutus.json`.
+The oracle is operated by this server, not by an independent provider such as Charli3 or Orcfax. The lending pool is this project's own contract.
+
 ## Connect your Sokosumi Coworker
 
 Install Sokosumi CLI `1.0.4`. This starter uses its runtime adapter.

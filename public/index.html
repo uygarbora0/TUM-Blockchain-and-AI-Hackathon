@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#153d31">
-    <meta name="description" content="Liquidation Guardian — understand your borrowing risk, simulate a price shock, and plan a measured response. A Cardano hackathon project.">
+    <meta name="description" content="Liquidation Guardian — an agent that protects a real Cardano Preprod loan within limits enforced on-chain.">
     <title>Guardian · Liquidation protection</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
@@ -13,104 +13,72 @@
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <aside class="sidebar" aria-label="Main navigation">
-      <a class="brand" href="#overview" aria-label="Guardian overview"><span class="brand-mark" data-icon="shield"></span><span>guardian<span class="brand-period">.</span></span></a>
-      <div class="workspace-label">YOUR WORKSPACE</div>
+      <a class="brand" href="#setup" aria-label="Guardian setup"><span class="brand-mark" data-icon="shield"></span><span>guardian<span class="brand-period">.</span></span></a>
+      <div class="workspace-label">CARDANO PREPROD</div>
       <nav class="nav-list">
-        <a href="#overview" class="nav-link active" data-view="overview" aria-current="page"><span data-icon="grid"></span>Overview<span class="nav-dot"></span></a>
-        <a href="#policy" class="nav-link" data-view="policy"><span data-icon="sliders"></span>Protection policy</a>
-        <a href="#activity" class="nav-link" data-view="activity"><span data-icon="activity"></span>Activity<span class="nav-count" id="activity-count">0</span></a>
-        <a href="#setup" class="nav-link" data-view="setup"><span data-icon="layers"></span>Setup guide</a>
+        <a href="#setup" class="nav-link" data-view="setup"><span data-icon="lock"></span>Setup<span class="nav-count" id="setup-progress">0/6</span></a>
+        <a href="#monitor" class="nav-link" data-view="monitor"><span data-icon="activity"></span>Live monitor<span class="nav-count" id="agent-badge">off</span></a>
       </nav>
       <div class="sidebar-bottom">
-        <div class="sidebar-note"><span class="note-orbit" data-icon="sprout"></span><strong>A little more breathing room.</strong><p>Understand the risk.<br>Prepare your next move.</p><a href="#setup">How Guardian works <span aria-hidden="true">↗</span></a></div>
+        <div class="sidebar-note"><span class="note-orbit" data-icon="sprout"></span><strong>Limits live on-chain.</strong><p>The agent acts alone.<br>The contracts keep it honest.</p></div>
         <div class="sidebar-footer"><span class="footer-symbol" data-icon="hexagon"></span><span>BUILT FOR CARDANO<small>TUM Hackathon · 2026</small></span></div>
       </div>
     </aside>
 
     <div class="app-shell">
       <header class="topbar">
-        <div class="breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">Overview</strong></div>
-        <div class="topbar-status"><span class="connection" id="connection-status"><span class="status-dot"></span><span id="connection-label">Connecting</span></span><span class="simulation-tag"><span data-icon="flask"></span>SIMULATION</span><span class="avatar" aria-label="Local workspace">G</span></div>
+        <div class="breadcrumb"><span>Guardian</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">Setup</strong></div>
+        <div class="topbar-status"><span class="connection" id="connection-status"><span class="status-dot"></span><span id="connection-label">Connecting</span></span><span class="simulation-tag"><span data-icon="hexagon"></span>PREPROD · TEST ADA</span></div>
       </header>
 
       <main id="main" tabindex="-1">
-        <div class="error-banner" id="connection-error" hidden role="alert"><span data-icon="alert"></span><span id="connection-error-message"></span><button class="text-button" id="retry-connection" type="button">Retry</button></div>
-        <section class="view" id="view-overview" aria-labelledby="overview-title">
-          <div class="page-heading"><div><div class="eyebrow"><span class="tiny-dot"></span> LIQUIDATION GUARDIAN</div><h1 id="overview-title">A calmer way to borrow.</h1><p>Your position, your boundaries. A clear view of what comes next.</p></div><button class="button button-light" id="edit-position" type="button"><span data-icon="edit"></span>Edit position</button></div>
-
-          <div class="demo-notice"><span data-icon="info"></span><span><strong>A safe place to test.</strong> Prices, loans, and rescue actions are simulated. No wallet is connected and no real funds move.</span><a href="#setup">See how it works <span aria-hidden="true">↗</span></a></div>
-
-          <div class="metrics-grid">
-            <article class="metric-card"><div class="metric-top"><span>Total collateral</span><span class="metric-icon" data-icon="layers"></span></div><div class="metric-value" id="collateral-value">—</div><div class="metric-bottom"><span class="coin-icon">₳</span><span id="collateral-detail">Loading position…</span><span class="metric-subtag">DEPOSITED</span></div></article>
-            <article class="metric-card"><div class="metric-top"><span>Outstanding debt</span><span class="metric-icon" data-icon="arrow-up-right"></span></div><div class="metric-value" id="debt-value">—</div><div class="metric-bottom"><span class="coin-icon debt-coin">$</span><span id="debt-detail">Loading position…</span><span class="metric-subtag">BORROWED</span></div></article>
-            <article class="metric-card reserve-card"><div class="metric-top"><span>Emergency reserve</span><span class="metric-icon" data-icon="shield"></span></div><div class="metric-value" id="reserve-value">—</div><div class="metric-bottom"><span class="tiny-dot"></span><span id="reserve-detail">Available for protection</span></div></article>
-          </div>
-
-          <div class="overview-grid">
-            <article class="panel market-panel">
-              <div class="panel-heading"><div><div class="section-kicker">THE BIG PICTURE</div><h2 id="position-label">Position outlook</h2></div><div class="segmented-control" aria-label="Chart metric"><button type="button" data-chart="price" class="selected" aria-pressed="true">ADA price</button><button type="button" data-chart="health" aria-pressed="false">Health</button></div></div>
-              <div class="chart-summary"><strong id="chart-current">—</strong><span id="chart-change" class="chart-change">Waiting for data</span><span class="chart-unit" id="chart-unit">USD / ADA</span></div>
-              <div class="chart-container"><svg id="history-chart" viewBox="0 0 720 260" role="img" aria-label="Simulated ADA price over time"></svg><p id="chart-empty" class="chart-empty" hidden>Start monitoring to build your position timeline.</p></div>
-              <div class="chart-legend"><span><i class="legend-line"></i><span id="chart-series-label">Simulated ADA price</span></span><span><i class="legend-line danger-line"></i><span id="chart-threshold-label">Liquidation price</span></span><span class="chart-sample" id="chart-samples">0 observations</span></div>
-              <div class="scenario-section"><div class="scenario-heading"><span>Explore a market scenario</span><span class="muted">Simulated prices</span></div><div class="scenario-controls" role="group" aria-label="Market scenario"><button type="button" data-scenario="calm" class="scenario-button active" aria-pressed="true"><span data-icon="sun"></span>Calm</button><button type="button" data-scenario="selloff" class="scenario-button" aria-pressed="false"><span data-icon="trend-down"></span>Sell-off</button><button type="button" data-scenario="crash" class="scenario-button" aria-pressed="false"><span data-icon="lightning"></span>Sharp drop</button><button type="button" data-scenario="recovery" class="scenario-button" aria-pressed="false"><span data-icon="trend-up"></span>Recovery</button></div></div>
-            </article>
-
-            <article class="panel health-panel">
-              <div class="panel-heading"><div><div class="section-kicker">ROOM TO BREATHE</div><h2>Position health</h2></div><span data-icon="heart" class="muted-icon"></span></div>
-              <div class="gauge-wrap"><svg viewBox="0 0 300 183" class="health-gauge" aria-hidden="true"><path class="gauge-track" d="M35 150 A115 115 0 0 1 265 150"/><path id="gauge-progress" class="gauge-progress" d="M35 150 A115 115 0 0 1 265 150" pathLength="100"/><circle id="gauge-end" cx="265" cy="150" r="7" fill="currentColor"/><text x="27" y="177" class="gauge-label">0.0</text><text x="260" y="177" class="gauge-label">3.0+</text></svg><div class="gauge-value"><strong id="health-value">—</strong><span>HEALTH FACTOR</span></div></div>
-              <div id="health-status" class="health-status">Reading position</div><p class="health-description" id="health-description">Your safety margin appears here.</p>
-              <div class="health-facts"><div><span>Liquidation below</span><strong>1.00 <span class="fact-unit">HF</span></strong></div><div><span>Price buffer</span><strong id="price-buffer">—</strong></div><div><span>Liquidation price</span><strong id="liquidation-price">—</strong></div></div>
-              <button class="button button-primary monitor-button" id="toggle-monitor" type="button"><span data-icon="play"></span><span id="monitor-label">Start monitoring</span></button><div class="monitor-caption" id="monitor-caption"><span class="status-dot"></span>Simulation is paused</div>
-            </article>
-
-            <article class="panel rescue-panel">
-              <div class="panel-heading"><div><div class="section-kicker">YOUR NEXT MOVE</div><h2>Rescue planner</h2></div><span class="small-badge" id="planner-badge">MANUAL APPROVAL</span></div>
-              <p class="panel-description" id="planner-explanation">Compare ways to restore your safety margin within your policy.</p>
-              <div id="action-cards" class="action-cards"><div class="skeleton-line">Loading rescue options…</div></div>
-              <div class="planner-footnote"><span data-icon="lock"></span><span>Every preview uses your spending limit and available reserves. Execution changes this simulation only.</span></div>
-            </article>
-
-            <article class="panel policy-summary-panel"><div class="panel-heading"><div><div class="section-kicker">YOUR GUARDRAILS</div><h2>Protection policy</h2></div><a href="#policy" class="icon-link" aria-label="Edit protection policy"><span data-icon="arrow-up-right"></span></a></div><div class="policy-summary"><div><span>Act below health</span><strong id="policy-trigger">—</strong></div><div><span>Restore health to</span><strong id="policy-target">—</strong></div><div><span>Session rescue budget</span><strong id="policy-budget">—</strong></div><div><span>Approval mode</span><strong id="policy-mode">—</strong></div></div><div class="policy-tip"><span data-icon="sparkles"></span><p><strong>Small actions. Clear boundaries.</strong><br>Guardian follows your rules and tells you when a rescue is out of reach.</p></div><a href="#policy" class="text-link">Manage policy <span aria-hidden="true">→</span></a></article>
-          </div>
-          <div class="warnings-box" id="analysis-warnings" hidden></div>
-          <footer class="page-footer"><span>Local simulation · No live lending connection</span><span>Designed for a little more peace of mind <span aria-hidden="true">✳</span></span></footer>
-        </section>
-
-        <section class="view" id="view-policy" aria-labelledby="policy-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow">MAKE IT YOURS</div><h1 id="policy-title">Your rules. Your safety net.</h1><p>Set clear limits before the market starts moving.</p></div><span class="small-badge">SIMULATION POLICY</span></div>
-          <form id="policy-form" class="settings-layout">
-            <div class="settings-main">
-              <section class="panel settings-section"><div class="settings-section-heading"><span class="section-number">01</span><div><h2>Choose your safety margin</h2><p>A higher health factor means more collateral relative to debt.</p></div></div><div class="form-grid"><label>Trigger health factor<input name="triggerHealth" type="number" step="0.01" min="1.01" max="10" required><small>Propose protection when health falls below this.</small></label><label>Target health factor<input name="targetHealth" type="number" step="0.01" min="1.02" max="10" required><small>The safety level a rescue should restore.</small></label></div></section>
-              <section class="panel settings-section"><div class="settings-section-heading"><span class="section-number">02</span><div><h2>Keep spending in bounds</h2><p>A rescue can only use the simulated reserves in your position.</p></div></div><div class="form-grid"><label>Total session rescue budget · USD<input name="maxSpendUsd" type="number" step="0.01" min="0" max="10000000" required><small>Total across all rescues, including estimated costs.</small></label><label>Keep at least · ADA<input name="minAdaReserve" type="number" step="0.01" min="0" max="10000000" required><small>Preserve this much ADA in your reserve.</small></label><label>Estimated transaction fee · ADA<input name="feeAda" type="number" step="0.01" min="0" max="100" required><small>Simulation assumption, not a network quote.</small></label><label>Swap slippage allowance · basis points<input name="slippageBps" type="number" step="1" min="0" max="1000" required><small>100 basis points = 1%. Applies to simulated unwinds.</small></label></div></section>
-              <section class="panel settings-section"><div class="settings-section-heading"><span class="section-number">03</span><div><h2>Decide how Guardian responds</h2><p>Automatic mode can act only inside this local simulation.</p></div></div><div class="form-grid"><label>Preferred rescue<select name="preferredAction"><option value="cheapest">Lowest feasible cost</option><option value="repay">Repay debt</option><option value="add_collateral">Add collateral</option><option value="unwind">Partially unwind</option></select><small>Rescues must pass the engine’s safety checks.</small></label><label>Approval mode<select name="mode"><option value="manual">Manual — review every rescue</option><option value="automatic">Automatic — simulated rescues only</option></select><small>Does not enable real wallet access.</small></label><label>Action cooldown · seconds<input name="cooldownSeconds" type="number" step="1" min="0" max="86400" required><small>Minimum interval between simulated rescues.</small></label><label>Maximum price age · seconds<input name="maxPriceAgeSeconds" type="number" step="1" min="1" max="3600" required><small>Older data blocks a rescue until prices refresh.</small></label></div></section>
-              <div class="form-actions"><p id="policy-form-status" class="form-status" role="status"></p><button type="button" id="discard-policy" class="button button-light">Discard changes</button><button type="submit" class="button button-primary"><span data-icon="check"></span>Save policy</button></div>
-            </div>
-            <aside class="settings-aside"><span class="aside-illustration" data-icon="shield"></span><h2>A policy is a boundary,<br>not a guarantee.</h2><p>Guardian can’t create reserve funds or guarantee that liquidation will be prevented.</p><div class="aside-divider"></div><h3>How to read health</h3><div class="health-key"><span class="key-dot green"></span><div><strong>Above your trigger</strong><p>Your position has breathing room.</p></div></div><div class="health-key"><span class="key-dot amber"></span><div><strong>Below your trigger</strong><p>Review a rescue while there is time.</p></div></div><div class="health-key"><span class="key-dot red"></span><div><strong>At or below 1.00</strong><p>Liquidation eligibility in this model. A rescue may be too late.</p></div></div><a href="#setup" class="text-link">Understand the simulation →</a></aside>
-          </form>
-        </section>
-
-        <section class="view" id="view-activity" aria-labelledby="activity-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow">A CLEAR PAPER TRAIL</div><h1 id="activity-title">Every move, accounted for.</h1><p>Follow the decisions behind your simulated protection.</p></div><a class="button button-light" href="/api/report" download="guardian-report.json"><span data-icon="download"></span>Export report</a></div>
-          <div class="activity-metrics"><div><span>Simulated rescues</span><strong id="rescue-count">0</strong></div><div><span>Total simulated spend</span><strong id="total-spent">$0.00</strong></div><div><span>Activity events</span><strong id="event-count">0</strong></div></div>
-          <article class="panel activity-panel"><div class="panel-heading"><h2>Position timeline</h2><label class="filter-label">Show<select id="activity-filter"><option value="all">All activity</option><option value="rescue">Rescues</option><option value="risk">Risk & prices</option><option value="settings">Settings & monitor</option></select></label></div><div id="activity-list" class="activity-list"></div></article>
-        </section>
+        <div class="error-banner" id="error-banner" hidden role="alert"><span data-icon="alert"></span><span id="error-message"></span></div>
+        <div class="vault-result" id="last-result" hidden></div>
 
         <section class="view" id="view-setup" aria-labelledby="setup-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow">FROM DEMO TO REAL-WORLD SERVICE</div><h1 id="setup-title">Know what’s connected.</h1><p>A working local demo today. A clear path to Cardano Preprod.</p></div></div>
-          <div class="setup-intro panel"><div class="setup-intro-icon" data-icon="sprout"></div><div><h2>Think of Guardian as a helper for a crypto loan.</h2><p>Your collateral is the crypto you deposit to back a loan. If its value falls too far, the lender can take collateral to repay your debt — that’s liquidation. Guardian watches the safety margin and calculates a response using funds you have set aside.</p></div></div>
-          <div class="setup-columns"><section class="panel setup-panel"><div class="panel-heading"><h2>Your integration checklist</h2><span class="small-badge">HONEST BY DESIGN</span></div><div id="integration-list" class="integration-list"></div></section><section class="panel setup-panel money-flow-panel"><div class="section-kicker">TWO SEPARATE MONEY FLOWS</div><h2>Paying the agent ≠ rescuing the loan.</h2><div class="money-flow"><span data-icon="user"></span><div><strong>Customer pays for analysis</strong><p>Customer → Masumi → agent’s seller wallet</p></div></div><div class="money-flow"><span data-icon="shield"></span><div><strong>User funds a loan rescue</strong><p>User’s authorized reserve → lending protocol</p></div></div><p class="muted">Hiring Guardian does not give it permission to spend wallet funds. This dashboard implements neither live lending execution nor wallet signing.</p></section></div>
-          <article class="panel demo-guide"><div class="panel-heading"><div><div class="section-kicker">YOUR TWO-MINUTE WALKTHROUGH</div><h2>Make the risk visible.</h2></div><a href="#overview" class="button button-primary">Open overview <span data-icon="arrow-up-right"></span></a></div><ol class="demo-steps"><li><span>01</span><div><h3>Meet your position</h3><p>Start with a sample ADA-backed loan. See the collateral, debt, reserves, and health factor.</p></div></li><li><span>02</span><div><h3>Turn up the pressure</h3><p>Start monitoring, then select Sell-off. Watch the simulated price and health factor change.</p></div></li><li><span>03</span><div><h3>Give it breathing room</h3><p>Preview a feasible rescue. Confirm to update the simulation and see the new health factor.</p></div></li><li><span>04</span><div><h3>Show your evidence</h3><p>Export the activity report. Record separate Preprod payment evidence when the paid agent is configured.</p></div></li></ol></article>
-          <div class="setup-bottom"><div><h3>A fresh start, whenever you need it.</h3><p>Reset the sample position, policy, history, and activity for your next demo.</p></div><button type="button" class="button button-danger-outline" id="reset-demo"><span data-icon="reset"></span>Reset simulation</button></div>
-          <footer class="page-footer"><span>Read the repository README for exact setup commands.</span><a href="https://www.masumi.network/tum-hackathon" target="_blank" rel="noreferrer">Official Masumi hackathon guide ↗</a></footer>
+          <div class="page-heading"><div><div class="eyebrow">SIX STEPS, ALL ON-CHAIN</div><h1 id="setup-title">Set up once. Then let it run.</h1><p>Your wallet signs every step that moves your funds. The agent and oracle sign only their own transactions.</p></div></div>
+
+          <section class="panel settings-section vault-step" data-step="wallet"><div class="settings-section-heading"><span class="section-number">01</span><div><h2>Connect your wallet</h2><p>Lace, Eternl or another CIP-30 wallet set to Preprod. Your keys stay in the wallet.</p></div></div><div id="step-wallet" class="vault-body"></div></section>
+
+          <section class="panel settings-section vault-step" data-step="services"><div class="settings-section-heading"><span class="section-number">02</span><div><h2>Fund the agent and the oracle</h2><p>Both run on this machine with their own keys and pay their own transaction fees.</p></div></div><div id="step-services" class="vault-body"></div></section>
+
+          <section class="panel settings-section vault-step" data-step="oracle"><div class="settings-section-heading"><span class="section-number">03</span><div><h2>Deploy the price oracle</h2><p>Publishes the live ADA/USD price on-chain, cross-checked across Kraken, CoinGecko and Coinbase.</p></div></div><div id="step-oracle" class="vault-body"></div></section>
+
+          <section class="panel settings-section vault-step" data-step="loan"><div class="settings-section-heading"><span class="section-number">04</span><div><h2>Open your loan</h2><p>Lock ADA as collateral and borrow tUSD. Below health 1.0 anyone can liquidate it at the oracle price.</p></div></div>
+            <form id="loan-form" class="vault-body"><div id="loan-info"></div><div class="form-grid">
+              <label>Collateral · ADA<input name="collateralAda" type="number" step="0.000001" min="5" value="100" required><small>Locked in the lending contract.</small></label>
+              <label>Opening health factor<input name="openingHealth" type="number" step="0.01" min="1.10" max="10" value="1.30" required><small>Borrow close to the limit so real market moves test the agent. Contract minimum 1.10.</small></label>
+            </div><div class="form-actions"><p class="form-status" id="loan-preview" role="status"></p><button type="submit" class="button button-primary" id="loan-submit"><span data-icon="lock"></span>Sign &amp; open loan</button></div></form></section>
+
+          <section class="panel settings-section vault-step" data-step="vault"><div class="settings-section-heading"><span class="section-number">05</span><div><h2>Sign the mandate and fund the vault</h2><p>The vault holds rescue funds. These limits are written into its datum; the agent cannot change them.</p></div></div>
+            <form id="mandate-form" class="vault-body"><div id="vault-info"></div><div class="form-grid">
+              <label>Deposit into vault · ADA<input name="amountAda" type="number" step="0.000001" min="3" value="60" required><small>Rescue funds. Withdraw at any time.</small></label>
+              <label>Max per agent transaction · ADA<input name="maxPerTxAda" type="number" step="0.000001" min="1" value="25" required><small>The contract rejects anything larger.</small></label>
+              <label>Max per period · ADA<input name="periodLimitAda" type="number" step="0.000001" min="1" value="40" required><small>Total the agent may move per period.</small></label>
+              <label>Period length · hours<input name="periodHours" type="number" step="1" min="1" max="8760" value="24" required><small>The allowance resets after this.</small></label>
+              <label>Mandate expires after · days<input name="expiryDays" type="number" step="1" min="1" max="365" value="7" required><small>After this the agent cannot spend at all.</small></label>
+            </div><p class="vault-note">Allowed recipients are fixed: your wallet and your own loan. The agent cannot pay anyone else.</p>
+            <div class="form-actions"><p class="form-status" id="mandate-status" role="status"></p><button type="submit" class="button button-primary" id="mandate-submit"><span data-icon="lock"></span>Sign mandate &amp; fund vault</button></div></form></section>
+
+          <section class="panel settings-section vault-step" data-step="agent"><div class="settings-section-heading"><span class="section-number">06</span><div><h2>Test the mandate, then start the agent</h2><p>Prove the contract stops the agent before you trust it with your loan.</p></div></div><div id="step-agent" class="vault-body"></div></section>
+        </section>
+
+        <section class="view" id="view-monitor" aria-labelledby="monitor-title" hidden>
+          <div class="page-heading"><div><div class="eyebrow">LIVE · CARDANO PREPROD</div><h1 id="monitor-title">Your loan, watched.</h1><p>Prices from exchanges and the on-chain oracle. Every action below is a real transaction.</p></div><div class="vault-actions" id="agent-controls"></div></div>
+          <div class="monitor-grid">
+            <article class="panel monitor-card"><div class="section-kicker">ADA / USD</div><div class="monitor-value" id="price-value">—</div><dl class="kv" id="price-detail"></dl></article>
+            <article class="panel monitor-card"><div class="section-kicker">LOAN HEALTH</div><div class="monitor-value" id="health-value">—</div><dl class="kv" id="loan-detail"></dl></article>
+            <article class="panel monitor-card"><div class="section-kicker">RESCUE VAULT</div><div class="monitor-value" id="vault-value">—</div><dl class="kv" id="vault-detail"></dl></article>
+          </div>
+          <section class="panel settings-section"><div class="settings-section-heading"><span class="section-number">⚙</span><div><h2>Agent policy</h2><p>When to act and how far to restore. The vault mandate still caps every amount on-chain.</p></div></div>
+            <form id="policy-form"><div class="form-grid">
+              <label>Act below health<input name="triggerHealth" type="number" step="0.01" min="1.01" max="5" required><small>Checked against the lower of the oracle and market price.</small></label>
+              <label>Restore health to<input name="targetHealth" type="number" step="0.01" min="1.02" max="5" required><small>Target after a rescue, if the mandate allows it.</small></label>
+            </div><div class="form-actions"><button type="submit" class="button button-light"><span data-icon="check"></span>Save policy</button></div></form></section>
+          <section class="panel settings-section"><div class="panel-heading"><h2>Activity</h2><span class="small-badge" id="last-check">NOT CHECKED YET</span></div><div id="activity" class="activity-feed"></div></section>
         </section>
       </main>
     </div>
-
-    <dialog id="position-dialog" class="app-dialog" aria-labelledby="position-dialog-title"><form id="position-form"><div class="dialog-heading"><div><div class="section-kicker">SIMULATED POSITION</div><h2 id="position-dialog-title">Make the demo your own.</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close position editor"><span data-icon="x"></span></button></div><p class="dialog-description">These values describe a sample loan. Changing them does not create or update a real position.</p><label>Position name<input name="label" maxlength="80" required></label><div class="form-grid"><label>Collateral · ADA<input name="collateralAmount" type="number" step="0.000001" min="0" max="1000000000" required></label><label>ADA price · USD<input name="priceUsd" type="number" step="0.000001" min="0.000001" max="1000000" required></label><label>Debt · dUSD<input name="debtAmount" type="number" step="0.000001" min="0" max="1000000000" required></label><label>dUSD price · USD<input name="debtPriceUsd" type="number" step="0.000001" min="0.000001" max="1000000" required></label><label>Reserve · ADA<input name="reserveCollateral" type="number" step="0.000001" min="0" max="1000000000" required></label><label>Reserve · dUSD<input name="reserveDebt" type="number" step="0.000001" min="0" max="1000000000" required></label><label>Liquidation threshold · %<input name="liquidationThreshold" type="number" step="0.1" min="0.1" max="99.9" required><small>Model parameter; not a verified protocol setting.</small></label></div><p class="form-error" id="position-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="button button-light close-dialog">Cancel</button><button type="submit" class="button button-primary">Save sample position</button></div></form></dialog>
-
-    <dialog id="rescue-dialog" class="app-dialog rescue-dialog" aria-labelledby="rescue-dialog-title"><div class="dialog-heading"><div><div class="section-kicker">REVIEW BEFORE YOU ACT</div><h2 id="rescue-dialog-title">Preview your rescue.</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close rescue preview"><span data-icon="x"></span></button></div><div id="rescue-preview"></div><p class="form-error" id="rescue-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="button button-light close-dialog">Cancel</button><button type="button" class="button button-primary" id="confirm-rescue"><span data-icon="shield"></span>Confirm simulated rescue</button></div></dialog>
-
-    <dialog id="reset-dialog" class="app-dialog small-dialog" aria-labelledby="reset-dialog-title"><div class="dialog-heading"><h2 id="reset-dialog-title">Start fresh?</h2><button type="button" class="icon-button close-dialog" aria-label="Close reset confirmation"><span data-icon="x"></span></button></div><p class="dialog-description">This resets your local sample position, protection policy, and simulation history. Export your report first if you want to keep it.</p><p class="form-error" id="reset-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="button button-light close-dialog">Keep simulation</button><button type="button" class="button button-primary" id="confirm-reset">Reset simulation</button></div></dialog>
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>

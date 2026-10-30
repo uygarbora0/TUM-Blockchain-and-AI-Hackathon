@@ -2,25 +2,34 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { get } from 'node:http';
 import { createGuardianServer } from './guardian-server.mjs';
-import { GuardianStore } from './guardian/store.mjs';
+import { GuardianError } from './guardian/errors.mjs';
 
 async function serverFixture(t) {
-  const store = new GuardianStore();
-  const server = createGuardianServer({ store, integrations: () => ({ network: 'Cardano Preprod' }), autoTick: false });
+  const calls = [];
+  const chain = {
+    network: 'Preprod',
+    overview: async wallet => ({ wallet }),
+    wallet: body => { if (!body.changeAddress) throw new GuardianError('Wallet address is invalid.'); return { address: body.changeAddress, addresses: [body.changeAddress], ownerKeyHash: 'aa' }; },
+    buildWithdraw: async wallet => { calls.push(['withdraw', wallet.address]); return { txHash: 'h', txCbor: '00' }; },
+    deployOracle: async price => { calls.push(['deploy', price]); return { txHash: 'd' }; },
+  };
+  const agent = { snapshot: () => ({ running: false }), start: async () => {}, stop() {}, setPolicy() {} };
+  const market = async () => ({ ok: false, reason: 'offline' });
+  const server = createGuardianServer({ chain, agent, market });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   const post = (path, body, headers = {}) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-guardian-client': 'dashboard', ...headers }, body: JSON.stringify(body) });
-  return { store, base, post };
+  return { base, post, calls };
 }
 
-test('cross-origin pages cannot change the local simulation or read private configuration', async t => {
-  const { base, post } = await serverFixture(t);
-  assert.equal((await post('/api/reset', {}, { origin: 'https://untrusted.example' })).status, 403);
-  assert.equal((await post('/api/reset', {}, { 'x-guardian-client': '' })).status, 403);
+test('cross-origin pages cannot build transactions or read private files', async t => {
+  const { base, post, calls } = await serverFixture(t);
+  assert.equal((await post('/api/wallet/connect', { changeAddress: 'addr_test1x' }, { origin: 'https://untrusted.example' })).status, 403);
+  assert.equal((await post('/api/vault/withdraw', {}, { 'x-guardian-client': '' })).status, 403);
   // Fetch normalizes Host to the URL authority; raw HTTP actually sends the hostile header.
   const hostileHostStatus = await new Promise((resolve, reject) => {
-    get(base + '/api/state', { headers: { host: 'untrusted.example' } }, response => {
+    get(base + '/api/status', { headers: { host: 'untrusted.example' } }, response => {
       response.resume();
       resolve(response.statusCode);
     }).on('error', reject);
@@ -28,36 +37,25 @@ test('cross-origin pages cannot change the local simulation or read private conf
   assert.equal(hostileHostStatus, 403);
   assert.equal((await fetch(base + '/.env')).status, 404);
   assert.equal((await fetch(base + '/%2e%2e%2f.env')).status, 404);
+  assert.deepEqual(calls, []);
 });
 
-test('invalid and oversized JSON cannot mutate a loan', async t => {
-  const { base, post, store } = await serverFixture(t);
-  const before = store.snapshot().position;
-  assert.equal((await post('/api/position', { position: { debt: -1 } })).status, 400);
-  assert.equal((await post('/api/monitor', { running: 'true' })).status, 400);
-  const malformed = await fetch(base + '/api/reset', { method: 'POST', headers: { 'content-type': 'application/json', 'x-guardian-client': 'dashboard' }, body: '{broken' });
+test('owner transactions need a connected wallet and well-formed JSON', async t => {
+  const { base, post, calls } = await serverFixture(t);
+  assert.equal((await post('/api/vault/withdraw', {})).status, 409);
+  const malformed = await fetch(base + '/api/wallet/connect', { method: 'POST', headers: { 'content-type': 'application/json', 'x-guardian-client': 'dashboard' }, body: '{broken' });
   assert.equal(malformed.status, 400);
-  assert.equal((await post('/api/reset', { junk: 'x'.repeat(66000) })).status, 413);
-  assert.deepEqual(store.snapshot().position, before);
+  assert.equal((await post('/api/wallet/connect', { junk: 'x'.repeat(66000) })).status, 413);
+  assert.equal((await post('/api/wallet/connect', {})).status, 400);
+  assert.equal((await post('/api/wallet/connect', { changeAddress: 'addr_test1x' })).status, 200);
+  assert.equal((await post('/api/vault/withdraw', {})).status, 200);
+  assert.deepEqual(calls, [['withdraw', 'addr_test1x']]);
 });
 
-test('API rescue flow replays one receipt and never fabricates blockchain evidence', async t => {
-  const { post, base } = await serverFixture(t);
-  assert.equal((await post('/api/scenario', { scenario: 'selloff' })).status, 200);
-  const preview = await (await post('/api/plan', { action: 'repay' })).json();
-  assert.ok(preview.plan.id);
-  const body = { planId: preview.plan.id, idempotencyKey: 'api-rescue-test' };
-  const [a, b] = await Promise.all([post('/api/execute', body), post('/api/execute', body)]);
-  const first = await a.json();
-  const second = await b.json();
-  assert.equal(first.receipt.id, second.receipt.id);
-  assert.equal(first.receipt.transactionHash, null);
-  assert.equal(first.receipt.sellerPaymentVerified, false);
-  assert.equal(first.state.stats.rescueCount, 1);
-  assert.ok(first.receipt.afterHealth >= 1.5);
-  const reportResponse = await fetch(base + '/api/report');
-  assert.match(reportResponse.headers.get('content-disposition'), /guardian-report/);
-  const report = await reportResponse.json();
-  assert.equal(report.receipts.length, 1);
-  assert.match(report.disclosure, /not proof/);
+test('the oracle is never deployed without a live market price', async t => {
+  const { post, calls } = await serverFixture(t);
+  const response = await post('/api/setup/deploy-oracle', {});
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /Live price unavailable/);
+  assert.deepEqual(calls, []);
 });
