@@ -14,6 +14,47 @@ const setup = () => {
   return { store, advance: seconds => time += seconds * 1000 };
 };
 
+test('liquidation test crosses below one even after an earlier rescue and stays there while monitoring', () => {
+  const { store, advance } = setup();
+  const { plan } = store.plan('repay');
+  store.execute(plan.id, 'prior-rescue-key');
+  const shocked = store.setScenario('crash');
+  assert.ok(shocked.analysis.metrics.healthFactor <= 0.9);
+  assert.ok(shocked.analysis.metrics.healthFactor > 0.89);
+  store.setMonitor(true);
+  advance(4);
+  store.tick();
+  assert.ok(store.snapshot().analysis.metrics.healthFactor < 1);
+});
+
+test('liquidation demo permits a funded automatic rescue without repeatedly resetting health below one', () => {
+  const { store, advance } = setup();
+  const position = store.snapshot().position;
+  position.reserve.debt = 2000;
+  store.setPosition(position);
+  store.setPolicy({ ...DEFAULT_POLICY, maxSpendUsd: 1500, mode: 'automatic', cooldownSeconds: 0 });
+  store.setMonitor(true);
+  const rescued = store.setScenario('crash');
+  assert.equal(rescued.stats.rescueCount, 1);
+  assert.ok(rescued.analysis.metrics.healthFactor >= 1.5);
+  const receipt = rescued.events.find(event => event.type === 'rescue').details;
+  assert.ok(receipt.beforeHealth < 1);
+  assert.equal(receipt.initiatedBy, 'automatic');
+  advance(4);
+  store.tick();
+  assert.equal(store.snapshot().stats.rescueCount, 1);
+  assert.ok(store.snapshot().analysis.metrics.healthFactor > 1.4);
+});
+
+test('liquidation demo cannot invent debt for a debt-free loan', () => {
+  const { store } = setup();
+  const position = store.snapshot().position;
+  position.debt.amount = 0;
+  store.setPosition(position);
+  assert.throws(() => store.setScenario('crash'), /no debt/);
+  assert.equal(store.snapshot().position.debt.amount, 0);
+});
+
 test('duplicate rescue confirmations cannot deduct reserves twice', () => {
   const { store } = setup();
   const { plan } = store.plan('repay');

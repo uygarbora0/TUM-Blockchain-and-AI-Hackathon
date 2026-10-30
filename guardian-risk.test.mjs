@@ -54,7 +54,7 @@ test('regression: repayment ignores the ADA fee and protected reserve', () => {
   position.reserve.collateral = 5.299999;
   const result = analyze(position, DEFAULT_POLICY, {now: NOW});
   assert.ok(result.actions.every(action => !action.feasible));
-  assert.match(actionOf(position, DEFAULT_POLICY, 'repay').reason, /fee and protected reserve/);
+  assert.match(actionOf(position, DEFAULT_POLICY, 'repay').reason, /fee and minimum balance/);
   position.reserve.collateral = 5.3;
   assert.equal(actionOf(position, DEFAULT_POLICY, 'repay').feasible, true);
   const after = simulateAction(position, DEFAULT_POLICY, 'repay', {now: NOW});

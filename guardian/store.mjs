@@ -124,6 +124,7 @@ export class GuardianStore {
       position.protocol = 'Guardian Sandbox';
       this.state.position = position;
       this.state.basePrice = position.collateral.priceUsd;
+      delete this.state.scenarioPrice;
       this.state.monitor = { ...this.state.monitor, running: false, scenario: 'calm', tick: 0 };
       this.changed();
       this.recordPoint();
@@ -135,13 +136,28 @@ export class GuardianStore {
   setScenario(scenario) {
     if (!Object.hasOwn(SCENARIOS, scenario)) throw new GuardianError('Choose calm, selloff, crash, or recovery.');
     return this.mutate(() => {
+      let price = this.state.basePrice * SCENARIOS[scenario];
+      if (scenario === 'crash') {
+        const { collateral, debt } = this.state.position;
+        if (debt.amount === 0) throw new GuardianError('This loan has no debt. Add simulated debt in Edit position to test liquidation.');
+        // Target the CURRENT loan, including earlier rescues, rather than a fixed starting price.
+        if (collateral.amount > 0) {
+          price = 0.9 * debt.amount * debt.priceUsd / (collateral.amount * collateral.liquidationThreshold);
+          price = Math.floor(price * 1e8) / 1e8;
+          if (price < 1e-8) throw new GuardianError('This loan is too small to reach health 0.90 at the supported price precision. Increase simulated debt in Edit position.');
+        }
+      }
       this.state.monitor.scenario = scenario;
       this.state.monitor.tick = 0;
-      this.state.position.collateral.priceUsd = roundPrice(this.state.basePrice * SCENARIOS[scenario]);
+      this.state.scenarioPrice = roundPrice(price);
+      this.state.position.collateral.priceUsd = this.state.scenarioPrice;
       this.state.position.priceUpdatedAt = new Date(this.clock()).toISOString();
       this.changed();
       this.recordPoint();
-      this.event('scenario', `${scenario === 'selloff' ? 'Sell-off' : scenario[0].toUpperCase() + scenario.slice(1)} scenario applied. Price is simulated.`);
+      this.event('scenario', scenario === 'crash'
+        ? 'Liquidation test applied: health below 1. Check Guardian’s response and wallet balance. Price is simulated.'
+        : `${scenario === 'selloff' ? 'Sell-off' : scenario[0].toUpperCase() + scenario.slice(1)} scenario applied. Price is simulated.`,
+        { healthFactor: this.analysis().metrics.healthFactor });
       this.autoRescue();
       return this.snapshot();
     });
@@ -165,7 +181,9 @@ export class GuardianStore {
       monitor.tick++;
       // Deterministic, bounded sample curve. No exchange or oracle calls are made.
       const wave = 1 + Math.sin(monitor.tick * 0.7) * 0.008 + Math.sin(monitor.tick * 0.19) * 0.004;
-      this.state.position.collateral.priceUsd = roundPrice(this.state.basePrice * SCENARIOS[monitor.scenario] * wave);
+      // Hold the scenario's price anchor after a rescue; do not push health back down each tick.
+      const anchor = this.state.scenarioPrice ?? this.state.basePrice * SCENARIOS[monitor.scenario];
+      this.state.position.collateral.priceUsd = roundPrice(anchor * wave);
       this.state.position.priceUpdatedAt = new Date(this.clock()).toISOString();
       this.changed();
       this.recordPoint();
@@ -258,7 +276,7 @@ export class GuardianStore {
       this.apply(analysis.recommendation.type, randomUUID(), `automatic-${randomUUID()}`, 'automatic');
     } else if (analysis.metrics.healthFactor !== null && analysis.metrics.healthFactor < this.state.policy.triggerHealth) {
       // Log an unresolved risk once, instead of flooding the activity feed each tick.
-      if (this.state.events[0]?.type !== 'blocked') this.event('blocked', 'No automatic rescue fits the current reserve, fee, freshness, and remaining budget constraints.');
+      if (this.state.events[0]?.type !== 'blocked') this.event('blocked', 'Guardian cannot rescue this loan within the current Guardian wallet balance and spending limit. Check the action explanations.');
     }
   }
 
