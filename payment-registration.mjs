@@ -3,7 +3,7 @@ import { registrationUrl, requireSavedRuntimeToken, requireAgentAuthor } from '.
 const statePath = 'docs/registration-state.json';
 const payment = JSON.parse(fs.readFileSync('docs/payment-state.json'));
 let state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath)) : {provenance:'VERIFIED', sourceId:payment.sourceId, walletId:payment.walletId};
-const save=()=>fs.writeFileSync(statePath,JSON.stringify(state,null,2));
+const save=()=>fs.writeFileSync(statePath,JSON.stringify(state,null,2),{mode:0o600});
 const base=process.env.MPS_URL+'/api/v1';
 const headers={token:process.env.ADMIN_KEY,'content-type':'application/json'};
 async function request(path,body){const r=await fetch(base+path,{headers,method:body?'POST':'GET',body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok||j.status!=='success')throw Error(`${r.status}: ${JSON.stringify(j.error??j.message??{})}`);return j.data;}
@@ -24,7 +24,7 @@ if(process.argv[2]==='key'){
  const sources=await request('/payment-source?take=100');
  const find=(x)=>{if(Array.isArray(x)){for(const y of x){const r=find(y);if(r)return r;}}else if(x&&typeof x==='object'){if(x.id===payment.sourceId)return x;for(const y of Object.values(x)){const r=find(y);if(r)return r;}}};
  const source=find(sources);if(!source||wallet.walletAddress!==payment.sellerAddress)throw Error('Dedicated source or wallet mismatch');
- const body={network:'Preprod',type:'Standard',sellingWalletVkey:wallet.walletVkey,supportedPaymentSources:[{chain:'Cardano',network:'Preprod',paymentSourceType:'Web3CardanoV2',address:source.smartContractAddress,pricing:{pricingType:'Dynamic'}}],ExampleOutputs:[],Tags:['hackathon','team-names'],name:'Hackathon Team Name Finder',description:'Suggests hackathon team names from a project topic and style.',Capability:{name:process.env.ZAI_MODEL,version:'1'},Author:{name:author},apiBaseUrl:registrationUrl(process.env.AGENT_API_PORT)};
+ const body={network:'Preprod',type:'Standard',sellingWalletVkey:wallet.walletVkey,supportedPaymentSources:[{chain:'Cardano',network:'Preprod',paymentSourceType:'Web3CardanoV2',address:source.smartContractAddress,pricing:{pricingType:'Dynamic'}}],ExampleOutputs:[],Tags:['hackathon','liquidation-risk','cardano'],name:'Liquidation Guardian',description:'Analyzes a supplied borrowing position, calculates budget-limited rescue alternatives, and provides a labelled simulation. Does not execute lending transactions.',Capability:{name:'liquidation-guardian-deterministic-analysis',version:'1'},Author:{name:author},apiBaseUrl:registrationUrl(process.env.AGENT_API_PORT)};
  state.registrationWritePending=true;state.request=body;save();
  const r=await request('/registry',body);state.registrationId=r.id;state.registrationWritePending=false;state.registration=r;save();console.log(JSON.stringify(r));
 }else{

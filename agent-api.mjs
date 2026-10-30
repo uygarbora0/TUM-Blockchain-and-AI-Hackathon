@@ -1,7 +1,8 @@
 import {createServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {existsSync,readFileSync,writeFileSync,mkdirSync,readdirSync} from 'node:fs';
-import {answer,client} from './client.mjs';
+import {answer,modelConfigured} from './client.mjs';
+import {runGuardianJob} from './guardian/job.mjs';
 import {inputHash,resultHash,sha256} from './standard-hash.mjs';
 import {confirmedState} from './paid-task.mjs';
 const jobsDir='.local/standard-jobs';mkdirSync(jobsDir,{recursive:true,mode:0o700});
@@ -10,10 +11,10 @@ const registry=()=>JSON.parse(readFileSync('docs/registration-state.json','utf8'
 const save=job=>writeFileSync(`${jobsDir}/${job.id}.json`,JSON.stringify(job),{mode:0o600});
 const load=id=>JSON.parse(readFileSync(`${jobsDir}/${id}.json`,'utf8'));
 export async function mps(path,body){
- const response=await fetch(process.env.MPS_URL+'/api/v1'+path,{method:body?'POST':'GET',headers:{token,'content-type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
- const data=await response.json();if(!response.ok)throw new Error(`Payment service HTTP ${response.status}`);return data.data;
+ const response=await fetch(process.env.MPS_URL+'/api/v1'+path,{method:body?'POST':'GET',redirect:'error',headers:{token,'content-type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
+ const data=await response.json();if(!response.ok||data.status!=='success')throw new Error(`Payment service HTTP ${response.status}`);return data.data;
 }
-const schema={input_data:[{id:'prompt',type:'string',name:'Team brief',data:{description:'Describe your hackathon project and preferred name style.'},validations:[{validation:'min',value:'1'},{validation:'max',value:'16000'}]}]};
+const schema={input_data:[{id:'prompt',type:'string',name:'Borrowing position',data:{description:'Send a JSON string with {position, policy?} for a deterministic liquidation-risk report, or "guardian demo" for a labelled price-drop simulation. Position includes collateral, debt, reserve, protocol, network, and observed price timestamp. No lending transactions are executed.'},validations:[{validation:'min',value:'1'},{validation:'max',value:'16000'}]}]};
 const respond=(res,status,data)=>{res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(data))};
 const port=Number(process.env.AGENT_API_PORT||21950);
 createServer(async(req,res)=>{
@@ -27,9 +28,14 @@ createServer(async(req,res)=>{
  const job=load(id);return respond(res,200,{id,status:job.status,result:job.status==='completed'?job.result:undefined});
  }
  if(req.method!=='POST'||url.pathname!=='/start_job')return respond(res,404,{error:'Route not found'});
- let bytes=0,body='';for await(const part of req){bytes+=part.length;if(bytes>20000)return respond(res,413,{error:'Request too large'});body+=part}
- const input=JSON.parse(body);const nonce=input.identifier_from_purchaser??input.identifierFromPurchaser;
+ let bytes=0;const chunks=[];for await(const part of req){bytes+=part.length;if(bytes>20000)return respond(res,413,{error:'Request too large'});chunks.push(part)}
+ const body=Buffer.concat(chunks).toString('utf8');
+ let input;try{input=JSON.parse(body)}catch{return respond(res,400,{error:'Request must contain valid JSON'})}
+ if(!input||typeof input!=='object'||Array.isArray(input))return respond(res,400,{error:'Request must be a JSON object'});
+ const nonce=input.identifier_from_purchaser??input.identifierFromPurchaser;
  if(!/^[a-fA-F0-9]{14,26}$/.test(nonce||'')||typeof input.input_data?.prompt!=='string'||!input.input_data.prompt.trim()||input.input_data.prompt.length>16000||Object.keys(input.input_data).some(k=>k!=='prompt'))return respond(res,400,{error:'Expected hex purchaser nonce and input_data.prompt'});
+ // Reject malformed/unsupported structured jobs before creating a payment obligation.
+ try{if(!runGuardianJob(input.input_data.prompt)&&!modelConfigured())return respond(res,400,{error:'Send a position JSON object or "guardian demo"; natural-language analysis needs a configured model'})}catch(error){return respond(res,400,{error:error.message})}
  const reg=registry();if(reg.registrationState!=='RegistrationConfirmed'&&reg.registration?.state!=='RegistrationConfirmed')return respond(res,503,{error:'Registration not confirmed'});
  // Persist before the payment write. Unknown outcomes require inspection, never automatic replay.
  const key=sha256(nonce);let job=readdirSync(jobsDir).filter(x=>/^[0-9a-f-]{36}\.json$/.test(x)).map(x=>load(x.replace('.json',''))).find(j=>j.nonceKey===key);
