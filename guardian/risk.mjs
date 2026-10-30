@@ -201,12 +201,12 @@ function candidate(type, position, policy, x) {
     debtRepaid = q;
     debtAfter -= q;
     cost += q * x.dp;
-    if (q > x.reserveDebt) reason = `Insufficient ${position.debt.symbol} reserve to reach the target.`;
+    if (q > x.reserveDebt) reason = `Not enough ${position.debt.symbol} in the Guardian wallet to reach the target.`;
   } else if (required && type === 'add_collateral') {
     q = ceil(x.deficit, x.threshold * x.cp);
     collateralAfter += q;
     cost += q * x.cp;
-    if (q + x.fee + x.minAda > x.reserveAda) reason = 'Insufficient ADA reserve after collateral, fees, and protected reserve.';
+    if (q + x.fee + x.minAda > x.reserveAda) reason = 'Not enough ADA in the Guardian wallet after adding collateral, paying fees, and keeping your minimum balance.';
     if (collateralAfter > 1_000_000_000n * TOKEN) reason = 'Projected collateral exceeds the supported position size.';
   } else if (required && type === 'unwind') {
     const improvement = x.target * x.proceedsBps - x.threshold * BPS;
@@ -229,7 +229,7 @@ function candidate(type, position, policy, x) {
     if (position.network !== 'simulation') reason = 'Unwind execution is simulation only; no atomic lending and swap adapter is connected.';
   }
 
-  if (x.fee + x.minAda > x.reserveAda) reason = 'Insufficient ADA for the transaction fee and protected reserve.';
+  if (x.fee + x.minAda > x.reserveAda) reason = 'Insufficient ADA in the Guardian wallet for the transaction fee and minimum balance.';
   if (cost > x.cap) reason = 'Action exceeds maxSpendUsd, including the ADA transaction fee.';
   if (!required) reason = x.d === 0n ? 'There is no debt to protect.' : 'The position already meets the target health factor.';
   if (!x.fresh) reason = x.priceAgeSeconds < -5
@@ -243,7 +243,7 @@ function candidate(type, position, policy, x) {
   const action = {
     type,
     feasible: required && !reason,
-    reason: reason || 'Reaches the target within reserves and the spending limit.',
+    reason: reason || 'Reaches the target using the Guardian wallet, within the spending limit.',
     amount: amount(q),
     asset: type === 'repay' ? position.debt.symbol : 'ADA',
     costUsd: usd(cost),
@@ -291,7 +291,7 @@ export function analyze(positionInput, policyInput = {}, {now = Date.now()} = {}
   else if (!x.fresh) explanation = 'A trusted, fresh price snapshot is required before making a rescue decision.';
   else if (!triggered) explanation = `Health factor ${metrics.healthFactor.toFixed(3)} is at or above the ${policy.triggerHealth} action trigger. No automatic rescue is recommended.`;
   else if (recommendation) explanation = `Health factor ${metrics.healthFactor.toFixed(3)} is below the ${policy.triggerHealth} trigger. ${recommendation.type === 'repay' ? 'Repay' : recommendation.type === 'add_collateral' ? 'Add collateral of' : 'Simulate selling'} ${recommendation.amount} ${recommendation.asset} to reach ${recommendation.projectedHealthFactor === null ? 'a debt-free position' : `health factor ${recommendation.projectedHealthFactor.toFixed(3)}`}. Estimated action value including the ADA fee: $${recommendation.costUsd.toFixed(2)}.`;
-  else explanation = `Health factor ${metrics.healthFactor.toFixed(3)} is below the ${policy.triggerHealth} trigger, but no action reaches the target within the available reserves, fee requirement, and spending limit. Review the action reasons; no rescue was executed.`;
+  else explanation = `Health factor ${metrics.healthFactor.toFixed(3)} is below the ${policy.triggerHealth} trigger, but no action reaches the target within the Guardian wallet balance, transaction fee, and spending limit. Review the action reasons; no rescue was executed.`;
 
   return {metrics, actions, recommendation, warnings, explanation};
 }
