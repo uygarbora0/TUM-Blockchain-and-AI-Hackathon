@@ -122,7 +122,10 @@ export function createGuardianServer({ chain, agents, market }) {
       if (!allowedHosts.includes(req.headers.host)) return json(res, 403, { error: 'Only local dashboard requests are accepted.' });
       const origin = req.headers.origin;
       if (origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-origin requests are not allowed.' });
-      if (req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { error: 'Cross-site requests are not allowed.' });
+      // Block cross-site scripted requests (CSRF), but allow a user to follow a link
+      // into the dashboard: a top-level GET navigation is safe and carries no credentials-based risk.
+      const topLevelNavigation = req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate';
+      if (req.headers['sec-fetch-site'] === 'cross-site' && !topLevelNavigation) return json(res, 403, { error: 'Cross-site requests are not allowed.' });
       const url = new URL(req.url, `http://${req.headers.host}`);
       if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { status: 'ok', service: 'liquidation-guardian', network: chain.network });
       if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, await status(sessionFor(req)));

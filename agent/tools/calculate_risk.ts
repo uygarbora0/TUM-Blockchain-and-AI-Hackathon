@@ -1,6 +1,6 @@
 import { defineTool } from 'eve/tools';
 import { z } from 'zod';
-import { runGuardianJob } from '../../guardian/job.mjs';
+import { runGuardianJob, dashboardUrl } from '../../guardian/job.mjs';
 
 export default defineTool({
  description: 'Calculate a borrowing snapshot health factor and bounded rescue alternatives using the deterministic Liquidation Guardian engine. Read-only; never executes transactions. Pass the user-provided position and optional policy as JSON, or {"demo":true} only for an explicitly requested simulation.',
@@ -10,6 +10,6 @@ export default defineTool({
  execute({ requestJson }) {
   const result = runGuardianJob(requestJson);
   if (!result) throw new Error('calculate_risk requires structured JSON or an explicit guardian demo command');
-  return result.report;
+  return { ...result.report, dashboardUrl: dashboardUrl() };
  },
 });
