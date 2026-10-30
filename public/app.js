@@ -105,14 +105,21 @@ async function connect(key) {
     if (await api.getNetworkId() !== 0) throw new Error('Your wallet is on Mainnet. Switch it to Preprod and connect again.');
     const changeAddress = await api.getChangeAddress();
     const usedAddresses = (await api.getUsedAddresses().catch(() => [])).slice(0, 20);
-    status = await request('/api/wallet/connect', { changeAddress, usedAddresses });
+    // Prove you own this address. This session can then act only for your wallet.
+    const challenge = await request('/api/wallet/challenge', { changeAddress, usedAddresses });
+    if (challenge.connected) status = challenge;
+    else {
+      const signed = await api.signData(changeAddress, challenge.payload);
+      status = await request('/api/wallet/connect', { signature: signed.signature, key: signed.key });
+    }
     walletKey = key;
     remember(key);
     showError('');
     toast(`${wallet.name} connected.`);
   } catch (error) {
     api = null;
-    showError(error?.info || error?.message || 'The wallet refused the connection.');
+    const declined = error?.code === 3 || /declin|reject|cancel/i.test(error?.info || error?.message || '');
+    showError(declined ? 'You declined the sign-in signature. It only proves you own this wallet and moves no funds.' : error?.info || error?.message || 'The wallet refused the connection.');
   } finally { busy = false; render(); }
 }
 
@@ -161,7 +168,7 @@ function followUp() { followUntil = Date.now() + 3 * 60_000; refresh(); }
 function derive() {
   const chain = status?.chain;
   const connected = Boolean(chain?.wallet && api);
-  const agentFunded = chain && BigInt(chain.agent.lovelace ?? 0) >= 6_000_000n;
+  const agentFunded = Boolean(chain?.agent) && BigInt(chain.agent.lovelace ?? 0) >= 6_000_000n;
   const operatorFunded = chain && BigInt(chain.oracle.lovelace ?? 0) >= 8_000_000n;
   const oracleLive = Boolean(chain?.oracle?.price);
   const loan = chain?.loans?.[0] ?? null;
@@ -169,7 +176,7 @@ function derive() {
   const mandate = mandateUtxo?.mandate ?? null;
   const mandateOk = Boolean(mandate?.coversLoan);
   const running = Boolean(status?.agent?.running);
-  const steps = [connected, agentFunded && operatorFunded, oracleLive, Boolean(loan), mandateOk, running];
+  const steps = [connected, agentFunded, oracleLive, Boolean(loan), mandateOk, running];
   return { chain, connected, agentFunded, operatorFunded, oracleLive, loan, mandate, mandateOk, running, steps };
 }
 
@@ -190,11 +197,10 @@ function renderWallet(d) {
 function renderServices(d) {
   if (!d.chain) return '';
   const { agent, oracle } = d.chain;
-  const done = d.agentFunded && d.operatorFunded;
-  return `<dl class="kv"><dt>Agent fee wallet</dt><dd>${link('address', agent.address)} · ${ada(agent.lovelace)} ${d.agentFunded ? '✓' : '(needs 6+)'}</dd>
-      <dt>Oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} ${d.operatorFunded ? '✓' : '(needs 8+)'}</dd></dl>
-    <p class="vault-note">Keys live in <code>.local/guardian/</code>. Neither key can spend your vault through the owner path or touch your loan except to add collateral.</p>
-    ${done ? '' : `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund-services" ${busy || !d.connected ? 'disabled' : ''}>Send 15 ADA to agent &amp; 30 ADA to oracle</button></div>`}`;
+  return `<dl class="kv"><dt>Your agent's fee wallet</dt><dd>${agent ? `${link('address', agent.address)} · ${ada(agent.lovelace)} ${d.agentFunded ? '✓' : '(needs 6+)'}` : 'Connect your wallet: every customer gets their own agent key.'}</dd>
+      <dt>Shared oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} ${d.operatorFunded ? '✓' : '· low: the service operator tops this up, not you'}</dd></dl>
+    <p class="vault-note">You pay only your own agent's transaction fees. The shared price oracle is funded by whoever runs this service. Keys live in <code>.local/guardian/</code>; your agent's key serves no other customer, and it cannot spend your vault through the owner path or touch your loan except to add collateral.</p>
+    ${d.agentFunded ? '' : `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund-agent" ${busy || !d.connected ? 'disabled' : ''}>Send 15 ADA to your agent</button></div>`}`;
 }
 
 function renderOracle(d) {
@@ -206,7 +212,7 @@ function renderOracle(d) {
     return `<dl class="kv"><dt>On-chain price</dt><dd>${usdPrice(o.price)} · updated ${ago(Date.now() - o.updatedAt)}${o.fresh ? '' : ' · <strong>stale, cannot open or liquidate loans</strong>'}</dd><dt>Market now</dt><dd>${marketLine}</dd>
       <dt>Oracle address</dt><dd>${link('address', o.address)}</dd><dt>Lending contract</dt><dd>${escapeHtml(o.lendingHash)}</dd></dl>
       <div class="vault-actions"><button type="button" class="button button-light" data-action="publish-price" ${busy || !d.operatorFunded ? 'disabled' : ''}>Publish market price now</button></div>
-      <p class="vault-note">While the agent runs it republishes on a 0.5% move or every 20 minutes. Contracts reject prices older than 30 minutes.</p>`;
+      <p class="vault-note">One oracle serves every customer. While any customer's agent runs it is republished on a 0.5% move or every 20 minutes. Contracts reject prices older than 30 minutes.</p>`;
   }
   return `<dl class="kv"><dt>Market now</dt><dd>${marketLine}</dd>${o.deployed ? `<dt>Deployment</dt><dd>${link('transaction', o.deployTx)} · confirming</dd>` : ''}</dl>
     <div class="vault-actions"><button type="button" class="button button-primary" data-action="deploy-oracle" ${busy || !d.operatorFunded || !market?.ok ? 'disabled' : ''}>Deploy oracle at the market price</button></div>`;
@@ -226,7 +232,7 @@ function renderVaultInfo(d) {
   const rows = v.utxos.map((u) => {
     const m = u.mandate;
     if (!m) return `<div class="utxo"><strong>${ada(u.lovelace)}</strong> · plain transfer without a mandate. Only you can spend it.</div>`;
-    return `<div class="utxo"><strong>${ada(u.lovelace)}</strong> · ${link('transaction', u.ref.split('#')[0], u.ref)}${m.forThisAgent ? '' : ' · <em>mandate for another agent key</em>'}${m.coversLoan ? '' : ' · <strong>does not allow paying into your loan: withdraw and sign again</strong>'}
+    return `<div class="utxo"><strong>${ada(u.lovelace)}</strong> · ${link('transaction', u.ref.split('#')[0], u.ref)}${m.forThisAgent ? '' : ' · <em>mandate names a different agent key, not your agent: withdraw and sign again</em>'}${m.coversLoan ? '' : ' · <strong>does not allow paying into your loan: withdraw and sign again</strong>'}
       <dl class="kv"><dt>Per transaction</dt><dd>${ada(m.maxPerTx)}</dd><dt>Spent this period</dt><dd>${ada(m.spentInPeriod)} of ${ada(m.periodLimit)}</dd><dt>Expires</dt><dd>${new Date(Number(m.expiry)).toLocaleString()}</dd></dl></div>`;
   }).join('');
   return `<dl class="kv"><dt>Vault address</dt><dd>${link('address', v.address)}</dd><dt>Balance</dt><dd>${ada(v.lovelace)}</dd></dl>${rows}
@@ -260,8 +266,9 @@ function renderMonitor(d) {
   $('#price-detail').innerHTML = `${(market?.quotes || []).map((q) => `<dt>${escapeHtml(q.source)}</dt><dd>${q.price ? `$${fmt(q.price, 6)}` : `error: ${escapeHtml(q.error)}`}</dd>`).join('')}<dt>On-chain oracle</dt><dd>${o?.price ? `${usdPrice(o.price)} · ${ago(Date.now() - o.updatedAt)}` : 'not deployed'}</dd>`;
   const l = d.loan;
   $('#health-value').textContent = l ? hf(l.healthBps) : 'No loan';
-  $('#health-value').className = `monitor-value${l && l.healthBps !== null ? (Number(l.healthBps) < 10000 ? ' danger' : Number(l.healthBps) < (status.agent.policy.triggerHealth * 10000) ? ' warning' : '') : ''}`;
-  $('#loan-detail').innerHTML = l ? `<dt>Collateral</dt><dd>${ada(l.collateral)}</dd><dt>Debt</dt><dd>${tusd(l.debt)}</dd><dt>Liquidation below</dt><dd>${usdPrice(l.liquidationPriceMicro)}</dd><dt>Agent acts below</dt><dd>${fmt(status.agent.policy.triggerHealth, 2)}</dd>` : '<dt>Status</dt><dd>Open a loan in setup step 4.</dd>';
+  const policy = status.agent?.policy;
+  $('#health-value').className = `monitor-value${l && l.healthBps !== null ? (Number(l.healthBps) < 10000 ? ' danger' : policy && Number(l.healthBps) < (policy.triggerHealth * 10000) ? ' warning' : '') : ''}`;
+  $('#loan-detail').innerHTML = l ? `<dt>Collateral</dt><dd>${ada(l.collateral)}</dd><dt>Debt</dt><dd>${tusd(l.debt)}</dd><dt>Liquidation below</dt><dd>${usdPrice(l.liquidationPriceMicro)}</dd><dt>Agent acts below</dt><dd>${policy ? fmt(policy.triggerHealth, 2) : '—'}</dd>` : '<dt>Status</dt><dd>Open a loan in setup step 4.</dd>';
   const v = d.chain?.vault;
   $('#vault-value').textContent = v ? ada(v.lovelace) : '—';
   $('#vault-detail').innerHTML = d.mandate ? `<dt>Agent may move now</dt><dd>${ada(v.allowance)}</dd><dt>Per transaction</dt><dd>${ada(d.mandate.maxPerTx)}</dd><dt>Expires</dt><dd>${new Date(Number(d.mandate.expiry)).toLocaleDateString()}</dd>` : '<dt>Status</dt><dd>No mandate yet.</dd>';
@@ -270,7 +277,8 @@ function renderMonitor(d) {
     : `<button type="button" class="button button-primary" data-action="start" ${busy || !d.steps.slice(0, 5).every(Boolean) ? 'disabled' : ''}>${icon('play')}Start agent</button>`;
   const check = status?.agent?.lastCheck;
   $('#last-check').textContent = check ? `LAST CHECK ${new Date(check.at).toLocaleTimeString()}` : 'NOT CHECKED YET';
-  const events = status?.agent?.events || [];
+  // Your agent's log plus the shared oracle keeper's publications.
+  const events = [...(status?.agent?.events || []), ...(status?.oracle?.events || [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 200);
   $('#activity').innerHTML = events.length ? events.map((e) => `<div class="activity-row ${escapeHtml(e.type)}"><span class="small-badge">${escapeHtml(e.type.toUpperCase())}</span><div><p>${escapeHtml(e.message)}${e.txHash ? ` ${link('transaction', e.txHash)}` : ''}</p><small>${new Date(e.at).toLocaleString()}</small></div></div>`).join('') : '<p class="vault-note">Nothing yet. Start the agent to begin.</p>';
   if (!policyDirty && status?.agent?.policy) {
     $('#policy-form').triggerHealth.value = status.agent.policy.triggerHealth;
@@ -306,7 +314,7 @@ document.addEventListener('click', (event) => {
   const d = derive();
   if (action === 'rescan') { render(); if (!wallets().length) toast('Still no wallet extension on this page. Reload after enabling Lace.', true); }
   if (action === 'disconnect') disconnect();
-  if (action === 'fund-services') ownerTransaction('/api/setup/fund-services', {}, 'Service funding');
+  if (action === 'fund-agent') ownerTransaction('/api/setup/fund-agent', {}, 'Agent funding');
   if (action === 'deploy-oracle') serverAction('/api/setup/deploy-oracle', {}, (r) => `Oracle deployment submitted by the operator key: ${link('transaction', r.txHash)}.`);
   if (action === 'publish-price') serverAction('/api/oracle/publish', {}, (r) => `Published ${usdPrice(r.price)} on-chain: ${link('transaction', r.txHash)}.`);
   if (action === 'close-loan') ownerTransaction('/api/loan/close', {}, 'Loan repayment');
@@ -314,7 +322,7 @@ document.addEventListener('click', (event) => {
   if (action === 'agent-ok') serverAction('/api/vault/agent-test', { amountAda: 1 }, agentResult);
   if (action === 'agent-over' && d.mandate) serverAction('/api/vault/agent-test', { amountAda: micro(d.mandate.maxPerTx) + 1, checkLimits: false }, agentResult);
   if (action === 'start') serverAction('/api/agent/start', {}, () => { location.hash = 'monitor'; return 'Agent started. Watch the live monitor.'; });
-  if (action === 'stop') serverAction('/api/agent/stop', {}, () => 'Agent stopped. No more oracle updates or rescues.');
+  if (action === 'stop') serverAction('/api/agent/stop', {}, () => 'Agent stopped. No more rescues for your loan.');
 });
 
 function agentResult(r) {

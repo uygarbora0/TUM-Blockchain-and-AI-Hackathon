@@ -48,17 +48,32 @@ If installed, prefix an install command with `sfw`, such as `sfw npm ci`.
 `npm run dev` opens the dashboard at http://127.0.0.1:3000. Nothing in it is simulated:
 prices come from Kraken, CoinGecko and Coinbase, and every balance, loan and rescue is a Cardano Preprod transaction.
 
-Setup (the dashboard walks you through it):
+Operator setup, once for the whole service:
 
 1. Set `BLOCKFROST_API_KEY_PREPROD` in `.env` and start `npm run dev`.
-2. Connect Lace or Eternl on Preprod with test ADA from the faucet.
-3. Fund the agent fee wallet and the oracle operator (one wallet signature).
-4. Deploy the price oracle at the live market price (signed by the oracle key).
-5. Open a loan: lock ADA, mint tUSD. Opening near the limit (for example health 1.30 with trigger 1.32) lets real market moves trigger a rescue.
-6. Sign the mandate and fund the vault, test it, then start the agent.
+2. Send 30+ test ADA from the faucet to the oracle operator address printed at startup.
+   The service pays for the shared oracle; customers never do.
+3. Deploy the price oracle at the live market price from the dashboard (signed and paid by the oracle key).
 
-While running, the agent checks every 60 seconds. It republishes the oracle on a 0.5% move or every 20 minutes,
-and below the trigger it moves ADA from the vault into your loan as collateral, capped by the mandate.
+Each customer (the dashboard walks them through it):
+
+1. Connect Lace or Eternl on Preprod with test ADA, and sign the one-time sign-in message.
+   It moves no funds; it proves the wallet is yours, so this browser session can act only for it.
+2. Fund your own agent's fee wallet with 15 ADA (one wallet signature). Every customer gets their own agent key.
+3. Open a loan: lock ADA, mint tUSD. Opening near the limit (for example health 1.30 with trigger 1.32) lets real market moves trigger a rescue.
+4. Sign the mandate and fund the vault, test it, then start the agent.
+
+Each customer has their own agent: its own key and fee wallet, policy, activity log and vault mandate.
+A customer's mandate names only their agent's key, so no agent can spend another customer's vault.
+Several customers can use the dashboard at once, each in their own browser (or browser profile):
+every browser gets its own session, and a session can only see and control the wallet that signed in to it.
+Agents run side by side; signing in or stopping an agent never affects another customer.
+Each running agent costs about two Blockfrost reads a minute, plus two for the shared oracle and the dashboards' polling,
+so plan the Blockfrost tier for the number of customers (the free 50,000 requests a day covers roughly ten).
+
+Every 60 seconds the server fetches the market once and refreshes the one shared oracle on a 0.5% move or every 20 minutes
+(only while at least one agent runs). Each running agent then checks its own loan, and below the trigger it moves ADA
+from that customer's vault into their loan as collateral, capped by the mandate.
 
 Contracts live in `onchain/validators/` (Aiken, Plutus V3):
 
@@ -66,7 +81,9 @@ Contracts live in `onchain/validators/` (Aiken, Plutus V3):
 - `lending.ak`: loans and tUSD. Anyone may add collateral or repay; only the borrower may borrow more, withdraw or close; anyone may liquidate below health 1.0 at a price under 30 minutes old.
 - `mandate_vault.ak`: rescue funds. The agent pays only allowed recipients (your wallet and your loan), within per-transaction, per-period and expiry limits, measured as net flow. The owner can withdraw everything at any time.
 
-The agent key, oracle key, deployment record and agent log are created in `.local/guardian/` (mode 600) and never committed.
+Keys and state are created in `.local/guardian/` (mode 600) and never committed: the oracle key, deployment record and
+oracle log at the top level, and each customer's agent key and state in `agents/<owner key hash>/`.
+A shared `agent-key.json` from an earlier version moves to the folder of the owner it was serving on the next start.
 Back them up while they hold test ADA. After editing a contract, run `npm run contract` (Aiken `v1.1.24`) and commit `onchain/plutus.json`.
 The oracle is operated by this server, not by an independent provider such as Charli3 or Orcfax. The lending pool is this project's own contract.
 

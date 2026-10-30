@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { healthBps, collateralFor, ADA, VAULT_KEEP, OPERATOR_FLOOR, MAX_PRICE_AGE_MS } from './chain.mjs';
+import { healthBps, collateralFor, ADA, VAULT_KEEP, OPERATOR_FLOOR, MAX_PRICE_AGE_MS, KEY_HASH } from './chain.mjs';
 import { marketPrice } from './prices.mjs';
 import { GuardianError } from './errors.mjs';
 
@@ -21,26 +22,13 @@ export function validatePolicy(input = {}) {
   return { triggerHealth: Math.round(triggerHealth * 100) / 100, targetHealth: Math.round(targetHealth * 100) / 100 };
 }
 
-/**
- * The autonomous loop. Every tick it reads live market prices, keeps the
- * on-chain oracle current, and tops up the owner's loan from the vault when
- * health falls below the trigger. Contracts enforce every limit; this loop
- * only decides when to ask.
- */
-export class GuardianAgent {
-  constructor({ chain, file, market = marketPrice, clock = Date.now, intervalMs = 60_000 }) {
-    this.chain = chain;
+/** Persisted state with an event log, shared by the agents and the oracle keeper. */
+class Journal {
+  constructor({ file, clock, state }) {
     this.file = file;
-    this.market = market;
     this.clock = clock;
-    this.intervalMs = intervalMs;
-    this.state = { running: false, owner: null, policy: { ...DEFAULT_POLICY }, events: [], lastRescue: null, lastCheck: null };
-    if (file && existsSync(file)) {
-      const saved = JSON.parse(readFileSync(file, 'utf8'));
-      this.state = { ...this.state, ...saved, policy: validatePolicy(saved.policy) };
-      if (this.state.running) this.event('system', 'Server restarted. The agent resumed with its saved owner and policy.');
-    }
-    this.ticking = false;
+    this.state = state;
+    if (file && existsSync(file)) this.state = { ...this.state, ...JSON.parse(readFileSync(file, 'utf8')) };
   }
 
   persist() {
@@ -56,23 +44,47 @@ export class GuardianAgent {
     this.persist();
   }
 
-  snapshot() { return JSON.parse(JSON.stringify({ ...this.state, intervalMs: this.intervalMs }, (_, v) => typeof v === 'bigint' ? v.toString() : v)); }
+  /** Log a repeating condition once instead of on every tick. */
+  once(type, message) {
+    if (this.state.events[0]?.message !== message) this.event(type, message);
+  }
+
+  snapshot(extra = {}) { return JSON.parse(JSON.stringify({ ...this.state, ...extra }, (_, v) => typeof v === 'bigint' ? v.toString() : v)); }
+}
+
+/**
+ * One customer's agent, with its own key, policy and log. Every tick it tops
+ * up the owner's loan from their vault when health falls below the trigger.
+ * Contracts enforce every limit; this loop only decides when to ask.
+ */
+export class GuardianAgent extends Journal {
+  constructor({ chain, ownerKeyHash, file, clock = Date.now, intervalMs = 60_000 }) {
+    super({ file, clock, state: { running: false, owner: null, policy: { ...DEFAULT_POLICY }, events: [], lastRescue: null, lastCheck: null } });
+    this.chain = chain;
+    this.ownerKeyHash = ownerKeyHash;
+    this.intervalMs = intervalMs;
+    this.state.policy = validatePolicy(this.state.policy);
+    if (this.state.running) this.event('system', 'Server restarted. The agent resumed with its saved owner and policy.');
+    this.ticking = false;
+  }
+
+  snapshot() { return super.snapshot({ intervalMs: this.intervalMs, agentAddress: this.chain.agentFor(this.ownerKeyHash).address }); }
 
   async start(wallet) {
+    if (wallet.ownerKeyHash !== this.ownerKeyHash) throw new GuardianError('This agent belongs to another wallet.', 403);
     const view = await this.chain.agentView(wallet.ownerKeyHash);
     if (!view.oracle) throw new GuardianError('Deploy the price oracle first.', 409);
     if (!view.loans.length) throw new GuardianError('Open a loan first. The agent protects a real loan.', 409);
-    if (!view.mandate) throw new GuardianError('Sign a mandate and fund the vault first.', 409);
+    if (!view.mandate) throw new GuardianError('Sign a mandate for your agent and fund the vault first.', 409);
     if (!view.mandate.recipients.includes(this.chain.loanAddress(wallet.ownerKeyHash))) throw new GuardianError('Your mandate predates the loan contract. Withdraw and sign a new mandate.', 409);
     this.state.running = true;
     this.state.owner = { address: wallet.address, ownerKeyHash: wallet.ownerKeyHash };
     this.event('agent', `Agent started. It checks prices and your loan every ${Math.round(this.intervalMs / 1000)} seconds.`);
-    this.tick();
   }
 
   stop() {
     this.state.running = false;
-    this.event('agent', 'Agent stopped. The oracle is no longer refreshed and no rescues are sent.');
+    this.event('agent', 'Agent stopped. No rescues are sent for your loan.');
   }
 
   setPolicy(input) {
@@ -80,36 +92,21 @@ export class GuardianAgent {
     this.event('policy', `Policy saved: act below health ${this.state.policy.triggerHealth}, restore to ${this.state.policy.targetHealth}.`);
   }
 
-  async tick() {
+  async tick(market, shared) {
     if (!this.state.running || this.ticking) return;
     this.ticking = true;
-    try { await this.check(); } catch (error) {
-      const message = String(error?.message || error).slice(0, 300);
-      if (this.state.events[0]?.message !== message) this.event('error', message);
+    try { await this.check(market, shared); } catch (error) {
+      this.once('error', String(error?.message || error).slice(0, 300));
     } finally { this.ticking = false; }
   }
 
-  async check() {
-    const owner = this.state.owner;
-    const market = await this.market();
-    const view = await this.chain.agentView(owner.ownerKeyHash);
+  async check(market, shared) {
+    const view = await this.chain.agentView(this.ownerKeyHash, shared);
     const now = this.clock();
+    if (!market.ok) this.once('market', `Market price unavailable: ${market.reason}`);
 
-    // 1. Keep the oracle near the market so liquidation and borrowing use a real price.
-    if (market.ok && view.oracle) {
-      const moved = Math.abs(Number(market.priceMicro - view.oracle.price)) / Number(view.oracle.price);
-      if (moved >= ORACLE_MOVE || view.oracle.ageMs >= ORACLE_REFRESH_MS) {
-        if (view.operatorLovelace < OPERATOR_FLOOR) {
-          this.once('oracle', 'The oracle operator wallet is low on ADA. Fund it from setup step 2.');
-        } else {
-          const { txHash } = await this.chain.publishPrice(market.priceMicro);
-          this.event('oracle', `Published $${market.priceUsd.toFixed(5)} on-chain (${(moved * 100).toFixed(2)}% move, previous price ${Math.round(view.oracle.ageMs / 60000)} min old).`, { txHash });
-        }
-      }
-    } else if (!market.ok) this.once('market', `Market price unavailable: ${market.reason}`);
-
-    // 2. Protect the loan. Use the lower of oracle and market prices: the
-    //    oracle decides liquidation, the market shows where it is heading.
+    // Use the lower of oracle and market prices: the oracle decides
+    // liquidation, the market shows where it is heading.
     const prices = [view.oracle?.fresh ? view.oracle.price : null, market.ok ? market.priceMicro : null].filter(Boolean);
     const loans = view.loans.map(loan => {
       const worst = prices.length ? prices.reduce((a, b) => (a < b ? a : b)) : null;
@@ -132,7 +129,7 @@ export class GuardianAgent {
         this.once('blocked', `Health ${health} is below ${policy.triggerHealth}, but the mandate allowance or vault balance leaves no room for a rescue. Add funds or raise the limits.`);
         continue;
       }
-      const result = await this.chain.agentRescue(owner.ownerKeyHash, amount);
+      const result = await this.chain.agentRescue(this.ownerKeyHash, amount);
       const partial = amount < needed ? ` Partial: the full rescue needs ${(Number(needed) / 1e6).toFixed(2)} ADA, capped by the mandate or vault.` : '';
       if (result.status === 'submitted') {
         this.state.lastRescue = { at: new Date(now).toISOString(), loanRef: result.loanRef, txHash: result.txHash };
@@ -143,10 +140,107 @@ export class GuardianAgent {
     }
     this.persist();
   }
+}
 
-  /** Log a repeating condition once instead of on every tick. */
-  once(type, message) {
-    if (this.state.events[0]?.message !== message) this.event(type, message);
+/**
+ * Keeps the one shared on-chain oracle near the market so every customer's
+ * loan is valued, borrowed against and liquidated at a real price.
+ */
+export class OracleKeeper extends Journal {
+  constructor({ chain, file, clock = Date.now }) {
+    super({ file, clock, state: { events: [] } });
+    this.chain = chain;
+  }
+
+  /** Returns `{ oracle }` as read this tick so agents can reuse it, or `{}` when nothing was read. */
+  async tick(market) {
+    try { return await this.check(market); } catch (error) {
+      this.once('error', `Oracle: ${String(error?.message || error).slice(0, 300)}`);
+      return {};
+    }
+  }
+
+  async check(market) {
+    if (!this.chain.deployment) return {};
+    const view = await this.chain.oracleView();
+    if (!market.ok || !view.oracle) return { oracle: view.oracle };
+    const moved = Math.abs(Number(market.priceMicro - view.oracle.price)) / Number(view.oracle.price);
+    if (moved < ORACLE_MOVE && view.oracle.ageMs < ORACLE_REFRESH_MS) return { oracle: view.oracle };
+    if (view.operatorLovelace < OPERATOR_FLOOR) {
+      this.once('oracle', 'The oracle operator wallet is low on ADA. The server operator must top it up; its address is printed at startup.');
+      return { oracle: view.oracle };
+    }
+    const { txHash } = await this.chain.publishPrice(market.priceMicro);
+    this.event('oracle', `Published $${market.priceUsd.toFixed(5)} on-chain (${(moved * 100).toFixed(2)}% move, previous price ${Math.round(view.oracle.ageMs / 60000)} min old).`, { txHash });
+    // The new price is not confirmed yet; agents read the oracle themselves this tick.
+    return {};
+  }
+}
+
+// Before per-customer agents there was one shared key. Hand it to the owner it
+// was serving, so their existing mandate and funded fee wallet keep working.
+function adoptSharedAgent(dir, agentsDir) {
+  const key = join(dir, 'agent-key.json');
+  const state = join(dir, 'agent-state.json');
+  if (!existsSync(key) || !existsSync(state)) return;
+  const owner = JSON.parse(readFileSync(state, 'utf8')).owner?.ownerKeyHash;
+  if (!KEY_HASH.test(owner ?? '') || existsSync(join(agentsDir, owner, 'agent-key.json'))) return;
+  mkdirSync(join(agentsDir, owner), { recursive: true, mode: 0o700 });
+  renameSync(key, join(agentsDir, owner, 'agent-key.json'));
+  renameSync(state, join(agentsDir, owner, 'state.json'));
+}
+
+/**
+ * Every customer's agent plus the shared oracle keeper. One tick fetches the
+ * market and reads the oracle once, refreshes it, then checks each running
+ * agent, which keeps Blockfrost use to two reads per customer per tick.
+ */
+export class GuardianAgents {
+  constructor({ chain, dir, market = marketPrice, clock = Date.now, intervalMs = 60_000 }) {
+    this.chain = chain;
+    this.market = market;
+    this.clock = clock;
+    this.intervalMs = intervalMs;
+    this.dir = join(dir, 'agents');
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    adoptSharedAgent(dir, this.dir);
+    this.keeper = new OracleKeeper({ chain, file: join(dir, 'oracle-keeper.json'), clock });
+    this.agents = new Map();
+    for (const name of readdirSync(this.dir)) if (KEY_HASH.test(name) && existsSync(join(this.dir, name, 'state.json'))) this.get(name);
+    this.ticking = false;
+  }
+
+  /** This owner's agent, created on first use. */
+  get(ownerKeyHash) {
+    if (!KEY_HASH.test(ownerKeyHash)) throw new GuardianError('Owner key hash is invalid.');
+    let agent = this.agents.get(ownerKeyHash);
+    if (!agent) {
+      mkdirSync(join(this.dir, ownerKeyHash), { recursive: true, mode: 0o700 });
+      agent = new GuardianAgent({ chain: this.chain, ownerKeyHash, file: join(this.dir, ownerKeyHash, 'state.json'), clock: this.clock, intervalMs: this.intervalMs });
+      this.agents.set(ownerKeyHash, agent);
+    }
+    return agent;
+  }
+
+  get running() { return [...this.agents.values()].filter(agent => agent.state.running); }
+
+  async start(wallet) {
+    const agent = this.get(wallet.ownerKeyHash);
+    await agent.start(wallet);
+    this.tick();
+    return agent.snapshot();
+  }
+
+  /** The oracle is refreshed only while at least one customer's agent runs. */
+  async tick() {
+    const running = this.running;
+    if (this.ticking || !running.length) return;
+    this.ticking = true;
+    try {
+      const market = await this.market();
+      const shared = await this.keeper.tick(market);
+      for (const agent of running) await agent.tick(market, shared);
+    } finally { this.ticking = false; }
   }
 }
 

@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, extname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +16,10 @@ const SECURITY_HEADERS = {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 const bigintSafe = (_, v) => typeof v === 'bigint' ? v.toString() : v;
+const SESSION_COOKIE = 'guardian_session';
+const SESSION_IDLE_MS = 12 * 3_600_000;
+const MAX_SESSIONS = 1000;
+const CHALLENGE_MS = 5 * 60_000;
 
 function json(res, status, body, extra = {}) {
   res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', ...extra });
@@ -39,39 +44,75 @@ async function readJson(req) {
 
 /**
  * Local dashboard API. Everything it reports is read from Cardano Preprod or
- * live exchange APIs. The connected wallet is held in memory; the browser
- * reconnects through CIP-30 after a restart.
+ * live exchange APIs. Each browser has its own session, and a wallet joins a
+ * session only after signing a one-time challenge (CIP-30 signData), so every
+ * customer sees and controls only their own loan, vault and agent. Sessions
+ * live in memory; the browser signs in again after a restart.
  */
-export function createGuardianServer({ chain, agent, market }) {
-  let wallet = null;
+export function createGuardianServer({ chain, agents, market }) {
+  const sessions = new Map();
   let marketCache = null;
   const livePrice = async () => {
     if (!marketCache || Date.now() - marketCache.fetchedAt > 20_000) marketCache = { fetchedAt: Date.now(), value: await market() };
     return marketCache.value;
   };
-  const needWallet = () => { if (!wallet) throw new GuardianError('Connect your wallet first.', 409); return wallet; };
+  const sessionFor = req => {
+    const id = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})(?:;|$)`).exec(req.headers.cookie || '')?.[1];
+    const session = id && sessions.get(id);
+    if (session && Date.now() - session.seenAt < SESSION_IDLE_MS) { session.seenAt = Date.now(); return session; }
+    if (id) sessions.delete(id);
+    return null;
+  };
+  const newSession = () => {
+    for (const [id, s] of sessions) if (Date.now() - s.seenAt >= SESSION_IDLE_MS) sessions.delete(id);
+    if (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
+    const session = { id: randomBytes(32).toString('hex'), wallet: null, challenge: null, seenAt: Date.now() };
+    sessions.set(session.id, session);
+    return session;
+  };
+  const needWallet = session => { if (!session?.wallet) throw new GuardianError('Connect your wallet first.', 409); return session.wallet; };
+  const myAgent = session => agents.get(needWallet(session).ownerKeyHash);
   const freshPrice = async () => {
     const quote = await livePrice();
     if (!quote.ok) throw new GuardianError(`Live price unavailable: ${quote.reason}`, 503);
     return quote.priceMicro;
   };
-  const status = async () => ({ chain: await chain.overview(wallet), agent: agent.snapshot(), market: await livePrice() });
+  const status = async session => {
+    const wallet = session?.wallet ?? null;
+    return { chain: await chain.overview(wallet), agent: wallet ? agents.get(wallet.ownerKeyHash).snapshot() : null, oracle: agents.keeper.snapshot(), market: await livePrice() };
+  };
 
   const routes = {
-    '/api/wallet/connect': async body => { wallet = chain.wallet(body); return status(); },
-    '/api/wallet/disconnect': async () => { wallet = null; return status(); },
-    '/api/setup/fund-services': () => chain.buildFundServices(needWallet()),
+    // Step 1: describe the wallet. A session already holding it resumes without signing.
+    '/api/wallet/challenge': async (body, session) => {
+      const wallet = chain.wallet(body);
+      if (session.wallet?.address === wallet.address) return { connected: true, ...await status(session) };
+      const message = `Liquidation Guardian sign-in\nWallet: ${wallet.address}\nNonce: ${randomBytes(16).toString('hex')}\nIssued: ${new Date().toISOString()}`;
+      session.challenge = { wallet, payload: Buffer.from(message).toString('hex'), expiresAt: Date.now() + CHALLENGE_MS };
+      return { connected: false, payload: session.challenge.payload };
+    },
+    // Step 2: the wallet's signature over that challenge proves it owns the address.
+    '/api/wallet/connect': async (body, session) => {
+      const challenge = session?.challenge;
+      if (session) session.challenge = null;
+      if (!challenge || Date.now() > challenge.expiresAt) throw new GuardianError('Sign-in expired. Connect your wallet again.', 409);
+      if (!chain.verifyOwnership(challenge.wallet, challenge.payload, body)) throw new GuardianError('The wallet signature does not prove ownership of this address.', 403);
+      session.wallet = challenge.wallet;
+      return status(session);
+    },
+    '/api/wallet/disconnect': async (_, session) => { if (session) session.wallet = null; return status(session); },
+    '/api/setup/fund-agent': (_, session) => chain.buildFundAgent(needWallet(session)),
     '/api/setup/deploy-oracle': async () => chain.deployOracle(await freshPrice()),
     '/api/oracle/publish': async () => chain.publishPrice(await freshPrice()),
-    '/api/loan/open': body => chain.buildOpenLoan(needWallet(), body),
-    '/api/loan/close': () => chain.buildCloseLoan(needWallet()),
-    '/api/vault/deposit': body => chain.buildDeposit(needWallet(), body),
-    '/api/vault/withdraw': () => chain.buildWithdraw(needWallet()),
-    '/api/vault/agent-test': body => chain.agentPay(needWallet().ownerKeyHash, { amountAda: body.amountAda, checkLimits: body.checkLimits !== false }),
+    '/api/loan/open': (body, session) => chain.buildOpenLoan(needWallet(session), body),
+    '/api/loan/close': (_, session) => chain.buildCloseLoan(needWallet(session)),
+    '/api/vault/deposit': (body, session) => chain.buildDeposit(needWallet(session), body),
+    '/api/vault/withdraw': (_, session) => chain.buildWithdraw(needWallet(session)),
+    '/api/vault/agent-test': (body, session) => chain.agentPay(needWallet(session).ownerKeyHash, { amountAda: body.amountAda, checkLimits: body.checkLimits !== false }),
     '/api/tx/submit': body => chain.submitOwner(body.txCbor, body.witnessSet),
-    '/api/agent/start': async () => { await agent.start(needWallet()); return agent.snapshot(); },
-    '/api/agent/stop': async () => { agent.stop(); return agent.snapshot(); },
-    '/api/agent/policy': async body => { agent.setPolicy(body.policy); return agent.snapshot(); },
+    '/api/agent/start': (_, session) => agents.start(needWallet(session)),
+    '/api/agent/stop': async (_, session) => { const agent = myAgent(session); agent.stop(); return agent.snapshot(); },
+    '/api/agent/policy': async (body, session) => { const agent = myAgent(session); agent.setPolicy(body.policy); return agent.snapshot(); },
   };
 
   const server = createServer(async (req, res) => {
@@ -84,13 +125,19 @@ export function createGuardianServer({ chain, agent, market }) {
       if (req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { error: 'Cross-site requests are not allowed.' });
       const url = new URL(req.url, `http://${req.headers.host}`);
       if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { status: 'ok', service: 'liquidation-guardian', network: chain.network });
-      if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, await status());
+      if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, await status(sessionFor(req)));
       if (req.method === 'POST' && url.pathname.startsWith('/api/')) {
         if (req.headers['x-guardian-client'] !== 'dashboard') return json(res, 403, { error: 'Missing dashboard request header.' });
         const body = await readJson(req);
         const route = routes[url.pathname];
         if (!route) return json(res, 404, { error: 'API route not found.' });
-        return json(res, 200, await route(body));
+        let session = sessionFor(req);
+        const cookie = {};
+        if (!session && url.pathname === '/api/wallet/challenge') {
+          session = newSession();
+          cookie['set-cookie'] = `${SESSION_COOKIE}=${session.id}; Path=/; HttpOnly; SameSite=Strict`;
+        }
+        return json(res, 200, await route(body, session), cookie);
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'Method not allowed.' }, { Allow: 'GET, HEAD, POST' });
       if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'API route not found.' });
@@ -120,20 +167,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const release = acquireWorkerLock(resolve(dir, 'server.lock'));
   process.once('exit', release);
   const { GuardianChain } = await import('./guardian/chain.mjs');
-  const { GuardianAgent } = await import('./guardian/agent.mjs');
+  const { GuardianAgents } = await import('./guardian/agent.mjs');
   const { marketPrice } = await import('./guardian/prices.mjs');
   const chain = new GuardianChain({ dir });
-  const agent = new GuardianAgent({ chain, file: resolve(dir, 'agent-state.json') });
-  const server = createGuardianServer({ chain, agent, market: marketPrice });
-  const timer = setInterval(() => agent.tick(), agent.intervalMs);
+  const agents = new GuardianAgents({ chain, dir });
+  const server = createGuardianServer({ chain, agents, market: marketPrice });
+  const timer = setInterval(() => agents.tick(), agents.intervalMs);
   server.on('close', () => clearInterval(timer));
   server.once('error', error => { console.error(error.code === 'EADDRINUSE' ? `Port ${portText} is already in use. Set GUARDIAN_PORT to an available port.` : error.message); release(); process.exitCode = 1; });
   server.listen(Number(portText), '127.0.0.1', () => {
     console.log(`Liquidation Guardian → http://127.0.0.1:${portText}`);
     console.log(`Cardano ${chain.network}${chain.configured ? '' : ' (set BLOCKFROST_API_KEY_PREPROD to connect)'}`);
-    console.log(`Agent fee wallet:     ${chain.agent.address}`);
-    console.log(`Oracle operator:      ${chain.operator.address}`);
-    console.log(`Agent: ${agent.state.running ? 'running (resumed)' : 'stopped'}`);
+    console.log(`Oracle operator:      ${chain.operator.address} (you fund this from the faucet; customers never do)`);
+    console.log(`Customer agents:      ${agents.agents.size} (${agents.running.length} running)`);
   });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { release(); process.exit(0); }));
 }

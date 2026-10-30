@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, renameSy
 import { join } from 'node:path';
 import {
   Lucid, Blockfrost, Data, Constr, CML, applyParamsToScript, validatorToAddress, validatorToScriptHash,
-  getAddressDetails, credentialToAddress, generatePrivateKey, unixTimeToSlot, slotToUnixTime,
+  getAddressDetails, credentialToAddress, generatePrivateKey, unixTimeToSlot, slotToUnixTime, verifyData,
 } from '@lucid-evolution/lucid';
 import { GuardianError } from './errors.mjs';
 
@@ -16,11 +16,12 @@ const LOAN_TOKEN = hex('LOAN');
 const THRESHOLD_BPS = 8000n;
 export const MIN_OPEN_HEALTH_BPS = 11000n;
 export const MAX_PRICE_AGE_MS = 1_800_000;
-// Wallet floors for the server's two keys: fees plus script collateral.
+// Wallet floors for the agent and oracle keys: fees plus script collateral.
 const AGENT_FLOOR = 6n * ADA;
 const OPERATOR_FLOOR = 8n * ADA;
 // The vault keeps this much so its continuing output stays above min-UTxO.
 const VAULT_KEEP = 2n * ADA;
+export const KEY_HASH = /^[0-9a-f]{56}$/;
 
 /** Health factor in basis points (10000 = 1.0); null when debt-free. */
 export function healthBps(collateral, debt, priceMicro) {
@@ -126,7 +127,8 @@ const plain = value => JSON.parse(JSON.stringify(value, (_, v) => typeof v === '
 /**
  * Every Guardian transaction. Owner transactions are returned unsigned for
  * the browser wallet. Agent and oracle transactions are signed here with keys
- * that never leave `.local/guardian/`.
+ * that never leave `.local/guardian/`. Each owner has their own agent key
+ * under `agents/<owner key hash>/`; the oracle operator key is shared.
  */
 export class GuardianChain {
   constructor({ network = 'Preprod', dir, provider, clock = Date.now, blueprint = JSON.parse(readFileSync(BLUEPRINT, 'utf8')) } = {}) {
@@ -142,7 +144,7 @@ export class GuardianChain {
       return validator.compiledCode;
     };
     this.code = { vault: code('mandate_vault.mandate_vault.spend'), oracle: code('oracle.oracle.mint'), lending: code('lending.lending.mint') };
-    this.agent = this.keyInfo(loadOrCreateKey(join(dir, 'agent-key.json')));
+    this.agents = new Map();
     this.operator = this.keyInfo(loadOrCreateKey(join(dir, 'oracle-key.json')));
     this.deploymentFile = join(dir, 'deployment.json');
     this.deployment = existsSync(this.deploymentFile) ? JSON.parse(readFileSync(this.deploymentFile, 'utf8')) : null;
@@ -156,6 +158,19 @@ export class GuardianChain {
   keyInfo(privateKey) {
     const keyHash = CML.PrivateKey.from_bech32(privateKey).to_public().hash().to_hex();
     return { privateKey, keyHash, address: credentialToAddress(this.network, { type: 'Key', hash: keyHash }) };
+  }
+
+  /** This owner's agent key, created on first use. Their mandate names only this key. */
+  agentFor(ownerKeyHash) {
+    if (!KEY_HASH.test(ownerKeyHash)) throw new GuardianError('Owner key hash is invalid.');
+    let agent = this.agents.get(ownerKeyHash);
+    if (!agent) {
+      const agentDir = join(this.dir, 'agents', ownerKeyHash);
+      mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+      agent = this.keyInfo(loadOrCreateKey(join(agentDir, 'agent-key.json')));
+      this.agents.set(ownerKeyHash, agent);
+    }
+    return agent;
   }
 
   get configured() { return Boolean(this.provider); }
@@ -224,6 +239,12 @@ export class GuardianChain {
     return { address: change.bech32, addresses, ownerKeyHash: change.details.paymentCredential.hash };
   }
 
+  /** True when a CIP-30 signData result over `payload` was made by the wallet's payment key. */
+  verifyOwnership(wallet, payload, { signature, key } = {}) {
+    if (typeof signature !== 'string' || typeof key !== 'string' || signature.length > 4000 || key.length > 400 || !/^[0-9a-f]+$/i.test(signature + key)) return false;
+    try { return verifyData(CML.Address.from_bech32(wallet.address).to_hex(), wallet.ownerKeyHash, payload, { signature, key }); } catch { return false; }
+  }
+
   async walletUtxos(lucid, wallet) {
     return (await Promise.all(wallet.addresses.map(a => lucid.utxosAt(a)))).flat();
   }
@@ -270,7 +291,7 @@ export class GuardianChain {
     const candidates = utxos.flatMap(utxo => {
       try {
         const mandate = utxo.datum && decodeMandate(utxo.datum, this.network);
-        return mandate && mandate.agent === this.agent.keyHash ? [{ utxo, mandate }] : [];
+        return mandate && mandate.agent === this.agentFor(ownerKeyHash).keyHash ? [{ utxo, mandate }] : [];
       } catch { return []; }
     }).sort((a, b) => (b.utxo.assets.lovelace > a.utxo.assets.lovelace ? 1 : -1));
     return { utxos, active: candidates[0] ?? null };
@@ -278,15 +299,16 @@ export class GuardianChain {
 
   /** Everything the dashboard shows, read live from the chain. */
   async overview(wallet) {
+    const agent = wallet ? this.agentFor(wallet.ownerKeyHash) : null;
     const base = {
       network: this.network, configured: this.configured,
-      agent: { address: this.agent.address, keyHash: this.agent.keyHash, lovelace: null },
+      agent: agent && { address: agent.address, keyHash: agent.keyHash, lovelace: null },
       oracle: { operator: this.operator.address, operatorKeyHash: this.operator.keyHash, lovelace: null, deployed: Boolean(this.deployment) },
       contracts: Object.fromEntries(Object.entries(this.code).map(([k, v]) => [k, v.length / 2])),
     };
     if (!this.configured) return plain(base);
     const lucid = await this.lucid();
-    base.agent.lovelace = sum(await lucid.utxosAt(this.agent.address));
+    if (agent) base.agent.lovelace = sum(await lucid.utxosAt(agent.address));
     base.oracle.lovelace = sum(await lucid.utxosAt(this.operator.address));
     const oracle = await this.readOracle(lucid);
     if (this.deployment) {
@@ -314,7 +336,7 @@ export class GuardianChain {
         utxos: utxos.map(u => {
           let mandate = null;
           try { if (u.datum) mandate = decodeMandate(u.datum, this.network); } catch {}
-          return { ref: `${u.txHash}#${u.outputIndex}`, lovelace: u.assets.lovelace, mandate: mandate && { ...mandate, forThisAgent: mandate.agent === this.agent.keyHash, coversLoan: Boolean(loanAddress && mandate.recipients.includes(loanAddress)) } };
+          return { ref: `${u.txHash}#${u.outputIndex}`, lovelace: u.assets.lovelace, mandate: mandate && { ...mandate, forThisAgent: mandate.agent === agent.keyHash, coversLoan: Boolean(loanAddress && mandate.recipients.includes(loanAddress)) } };
         }),
         allowance: active ? mandateAllowance(active.mandate, window.lower, window.upper) : 0n,
       },
@@ -333,7 +355,7 @@ export class GuardianChain {
       const lucid = await this.lucid();
       lucid.selectWallet.fromPrivateKey(this.operator.privateKey);
       const funds = await lucid.utxosAt(this.operator.address);
-      if (sum(funds) < OPERATOR_FLOOR) throw new GuardianError('Fund the oracle operator wallet first (step 2).', 409);
+      if (sum(funds) < OPERATOR_FLOOR) throw new GuardianError('The oracle operator wallet needs 8+ ADA. The server operator funds it from the Preprod faucet; its address is printed at startup.', 409);
       const seed = funds[0];
       const previous = this.deployment;
       this.deployment = { network: this.network, operatorKeyHash: this.operator.keyHash, seed: { txHash: seed.txHash, outputIndex: seed.outputIndex } };
@@ -385,18 +407,18 @@ export class GuardianChain {
 
   // ---- Owner transactions (unsigned; the browser wallet signs) ----
 
-  /** Top up the agent and oracle operator wallets so they can pay fees. */
-  buildFundServices(wallet) {
+  /**
+   * Top up this owner's own agent fee wallet. The shared oracle operator is
+   * funded by whoever runs this server, never by a customer.
+   */
+  buildFundAgent(wallet) {
     return this.serial(async () => {
       const lucid = await this.lucid();
-      const agentNeed = sum(await lucid.utxosAt(this.agent.address)) < AGENT_FLOOR ? 15n * ADA : 0n;
-      const operatorNeed = sum(await lucid.utxosAt(this.operator.address)) < OPERATOR_FLOOR ? 30n * ADA : 0n;
-      if (!agentNeed && !operatorNeed) throw new GuardianError('Both service wallets are already funded.', 409);
+      const agent = this.agentFor(wallet.ownerKeyHash);
+      if (sum(await lucid.utxosAt(agent.address)) >= AGENT_FLOOR) throw new GuardianError('Your agent fee wallet is already funded.', 409);
       await this.useWallet(lucid, wallet);
-      let tx = lucid.newTx();
-      if (agentNeed) tx = tx.pay.ToAddress(this.agent.address, { lovelace: agentNeed });
-      if (operatorNeed) tx = tx.pay.ToAddress(this.operator.address, { lovelace: operatorNeed });
-      return { ...this.remember('fund-services', await tx.complete()), agent: agentNeed.toString(), operator: operatorNeed.toString() };
+      const tx = await lucid.newTx().pay.ToAddress(agent.address, { lovelace: 15n * ADA }).complete();
+      return { ...this.remember('fund-agent', tx), agent: (15n * ADA).toString() };
     });
   }
 
@@ -450,7 +472,7 @@ export class GuardianChain {
     });
   }
 
-  /** Lock ADA in the vault under a mandate for this agent. Your loan is an allowed recipient. */
+  /** Lock ADA in the vault under a mandate for this owner's agent. Their loan is an allowed recipient. */
   buildDeposit(wallet, input = {}) {
     return this.serial(async () => {
       const lucid = await this.lucid();
@@ -463,7 +485,7 @@ export class GuardianChain {
       if (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 365) throw new GuardianError('Expiry must be 1 to 365 days.');
       const now = this.clock();
       const mandate = {
-        agent: this.agent.keyHash, maxPerTx, periodLimit, periodMs: BigInt(periodHours) * 3_600_000n,
+        agent: this.agentFor(wallet.ownerKeyHash).keyHash, maxPerTx, periodLimit, periodMs: BigInt(periodHours) * 3_600_000n,
         periodStart: BigInt(now), spentInPeriod: 0n, recipients: [wallet.address, this.loanAddress(wallet.ownerKeyHash)],
         expiry: BigInt(now + expiryDays * 86_400_000),
       };
@@ -504,8 +526,8 @@ export class GuardianChain {
 
   // ---- Agent transactions (signed by the agent key) ----
 
-  async submitAgent(lucid, build) {
-    lucid.selectWallet.fromPrivateKey(this.agent.privateKey);
+  async submitAgent(lucid, agent, build) {
+    lucid.selectWallet.fromPrivateKey(agent.privateKey);
     try {
       const tx = await build(lucid.newTx()).complete();
       return { status: 'submitted', txHash: await tx.sign.withWallet().complete().then(s => s.submit()) };
@@ -534,16 +556,17 @@ export class GuardianChain {
       if (active.utxo.assets.lovelace - amount < VAULT_KEEP) return { status: 'blocked', reason: 'Not enough ADA left in the vault.' };
       const vault = this.vaultScript(ownerKeyHash);
       const lending = this.lendingScript();
+      const agent = this.agentFor(ownerKeyHash);
       const w = this.window();
       const upper = Math.min(w.upper, Number(active.mandate.expiry));
-      const result = await this.submitAgent(lucid, tx => tx
+      const result = await this.submitAgent(lucid, agent, tx => tx
         .collectFrom([active.utxo], agentSpend(amount, recipient))
         .collectFrom([loan.utxo], SUPPORT)
         .attach.SpendingValidator(vault.validator)
         .attach.SpendingValidator(lending.validator)
         .pay.ToContract(loanAddress, { kind: 'inline', value: loan.utxo.datum }, { ...loan.utxo.assets, lovelace: loan.collateral + amount })
         .pay.ToContract(vault.address, { kind: 'inline', value: encodeMandate(nextMandate(active.mandate, amount, w.lower)) }, { ...active.utxo.assets, lovelace: active.utxo.assets.lovelace - amount })
-        .addSignerKey(this.agent.keyHash)
+        .addSignerKey(agent.keyHash)
         .validFrom(w.lower).validTo(upper));
       return { ...result, amount: amount.toString(), loanRef: `${loan.utxo.txHash}#${loan.utxo.outputIndex}` };
     });
@@ -565,21 +588,22 @@ export class GuardianChain {
       if (active.utxo.assets.lovelace - amount < VAULT_KEEP) return { status: 'blocked', reason: 'Not enough ADA left in the vault.' };
       const vault = this.vaultScript(ownerKeyHash);
       const owner = active.mandate.recipients[0];
-      const result = await this.submitAgent(lucid, tx => tx
+      const agent = this.agentFor(ownerKeyHash);
+      const result = await this.submitAgent(lucid, agent, tx => tx
         .collectFrom([active.utxo], agentSpend(amount, 0))
         .attach.SpendingValidator(vault.validator)
         .pay.ToAddress(owner, { lovelace: amount })
         .pay.ToContract(vault.address, { kind: 'inline', value: encodeMandate(nextMandate(active.mandate, amount, w.lower)) }, { ...active.utxo.assets, lovelace: active.utxo.assets.lovelace - amount })
-        .addSignerKey(this.agent.keyHash)
+        .addSignerKey(agent.keyHash)
         .validFrom(w.lower).validTo(upper));
       return { ...result, amount: amount.toString(), recipient: owner };
     });
   }
 
-  /** The agent's view of one owner: oracle, loan and mandate allowance. */
-  async agentView(ownerKeyHash) {
+  /** The agent's view of one owner: oracle, loan and mandate allowance. Pass `shared.oracle` to reuse one read across agents. */
+  async agentView(ownerKeyHash, shared = {}) {
     const lucid = await this.lucid();
-    const oracle = await this.readOracle(lucid);
+    const oracle = 'oracle' in shared ? shared.oracle : await this.readOracle(lucid);
     const loans = await this.readLoans(lucid, ownerKeyHash);
     const { active } = await this.readMandate(lucid, ownerKeyHash);
     const w = this.window();
@@ -587,9 +611,13 @@ export class GuardianChain {
       oracle, loans, mandate: active?.mandate ?? null,
       vaultLovelace: active?.utxo.assets.lovelace ?? 0n,
       allowance: active ? mandateAllowance(active.mandate, w.lower, Math.min(w.upper, Number(active.mandate.expiry))) : 0n,
-      operatorLovelace: sum(await lucid.utxosAt(this.operator.address)),
-      agentLovelace: sum(await lucid.utxosAt(this.agent.address)),
     };
+  }
+
+  /** The oracle keeper's view: the shared price feed and its operator's balance. */
+  async oracleView() {
+    const lucid = await this.lucid();
+    return { oracle: await this.readOracle(lucid), operatorLovelace: sum(await lucid.utxosAt(this.operator.address)) };
   }
 }
 
