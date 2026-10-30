@@ -87,6 +87,8 @@ A shared `agent-key.json` from an earlier version moves to the folder of the own
 Back them up while they hold test ADA. After editing a contract, run `npm run contract` (Aiken `v1.1.24`) and commit `onchain/plutus.json`.
 The oracle is operated by this server, not by an independent provider such as Charli3 or Orcfax. The lending pool is this project's own contract.
 
+Every answer the Sokosumi agent returns (the deterministic report, the help text, the follow-up explanation, and the model's natural-language replies) ends with a call to action linking the customer to this dashboard, so a paid analysis hands the customer straight to where they can act on it. The link is read from `DASHBOARD_URL` in `.env` (default `http://127.0.0.1:3000`). Localhost only resolves on the machine running the dashboard; set `DASHBOARD_URL` to a public https URL (a tunnel or a deployment) before real customers use the agent, then restart the worker. No code change is needed.
+
 ## Connect your Sokosumi Coworker
 
 Install Sokosumi CLI `1.0.4`. This starter uses its runtime adapter.

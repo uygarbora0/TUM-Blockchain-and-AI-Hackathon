@@ -1,11 +1,14 @@
 import { analyze, createDemoPosition, validatePolicy, validatePosition } from './risk.mjs';
 
 export const MAX_JOB_INPUT = 16000;
+export const dashboardUrl = () => process.env.DASHBOARD_URL?.trim() || 'http://127.0.0.1:3000';
 export const GUARDIAN_HELP = `Liquidation Guardian checks a borrowing position and calculates rescue options. It cannot move funds.
 
 Send "guardian demo" for a labelled price-drop simulation, or send JSON with {"position": {...}, "policy": {...}}. The position must include id, label, protocol, network, collateral (symbol, amount, priceUsd, liquidationThreshold), debt (symbol, amount, priceUsd), reserve (collateral and debt quantities), and priceUpdatedAt (an ISO timestamp). Policy is optional.
 
-Use the README example for a complete input. A configured model can explain natural-language questions. No live lending execution, wallet authorization, or seller payment is implied by an analysis report.`;
+Use the README example for a complete input. A configured model can explain natural-language questions. No live lending execution, wallet authorization, or seller payment is implied by an analysis report.
+
+→ Explore positions interactively in the Liquidation Guardian dashboard: ${dashboardUrl()}`;
 
 function ownObject(value) {
  return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -91,6 +94,8 @@ export function formatGuardianReport(report) {
   analysis.explanation,
   recommended ? `Proposed action: ${recommended.type}, ${decimal(recommended.amount, 8)} ${recommended.asset}. This is a calculation, not an executed transaction.` : 'No executable action is proposed by the supplied policy. See the reasons below.',
   '',
+  `→ Review and act on this position in the Liquidation Guardian dashboard: ${dashboardUrl()}`,
+  '',
   ...rows,
   ...analysis.warnings.map(warning => `- Warning: ${warning}`),
   '',
@@ -114,5 +119,5 @@ export function runGuardianJob(input, options) {
 export function explainGuardianFollowup(previousReport) {
  if (!previousReport?.analysis) return GUARDIAN_HELP;
  const { analysis, generatedAt } = previousReport;
- return `Your previous report was calculated at ${generatedAt} from a saved snapshot. Its recorded status was ${analysis.metrics.status}, with health ${decimal(analysis.metrics.healthFactor, 4)}. It has not been refreshed or executed.\n\n${analysis.explanation}\n\nTo recalculate, send a complete new {"position": {...}, "policy": {...}} JSON object with a fresh, observed price timestamp, or "guardian demo" for a new simulation. Natural-language explanations require the optional model configuration. No funds have moved.`;
+ return `Your previous report was calculated at ${generatedAt} from a saved snapshot. Its recorded status was ${analysis.metrics.status}, with health ${decimal(analysis.metrics.healthFactor, 4)}. It has not been refreshed or executed.\n\n${analysis.explanation}\n\nTo recalculate, send a complete new {"position": {...}, "policy": {...}} JSON object with a fresh, observed price timestamp, or "guardian demo" for a new simulation. Natural-language explanations require the optional model configuration. No funds have moved.\n\n→ Review and act on this position in the Liquidation Guardian dashboard: ${dashboardUrl()}`;
 }
