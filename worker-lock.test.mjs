@@ -13,7 +13,7 @@ async function contenders(path,count=4){
  const children=Array.from({length:count},()=>fork('-e',[code,path],{execArgv:['--input-type=module'],stdio:['ignore','ignore','ignore','ipc']}));
  try{
   const results=await Promise.all(children.map(child=>new Promise((resolve,reject)=>{child.once('message',resolve);child.once('error',reject);child.once('exit',()=>reject(Error('Child exited before lock result')));})));
-  assert.equal(results.filter(result=>result.ok).length,1);
+  assert.equal(results.filter(result=>result.ok).length,1,JSON.stringify(results));
  }finally{await Promise.all(children.map(child=>new Promise(resolve=>{child.once('exit',resolve);child.send('release');})));}
 }
 test('missing private directory is created and owned lock released',()=>{const dir=temp(),path=join(dir,'.local/worker.lock');try{const release=acquireWorkerLock(path);assert.equal(statSync(join(dir,'.local')).mode&0o777,0o700);assert.equal(statSync(path).mode&0o777,0o600);release();assert.equal(existsSync(path),false);}finally{rmSync(dir,{recursive:true});}});

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { get } from 'node:http';
 import { createGuardianServer } from './guardian-server.mjs';
 import { GuardianStore } from './guardian/store.mjs';
 
@@ -17,7 +18,14 @@ test('cross-origin pages cannot change the local simulation or read private conf
   const { base, post } = await serverFixture(t);
   assert.equal((await post('/api/reset', {}, { origin: 'https://untrusted.example' })).status, 403);
   assert.equal((await post('/api/reset', {}, { 'x-guardian-client': '' })).status, 403);
-  assert.equal((await fetch(base + '/api/state', { headers: { host: 'untrusted.example' } })).status, 403);
+  // Fetch normalizes Host to the URL authority; raw HTTP actually sends the hostile header.
+  const hostileHostStatus = await new Promise((resolve, reject) => {
+    get(base + '/api/state', { headers: { host: 'untrusted.example' } }, response => {
+      response.resume();
+      resolve(response.statusCode);
+    }).on('error', reject);
+  });
+  assert.equal(hostileHostStatus, 403);
   assert.equal((await fetch(base + '/.env')).status, 404);
   assert.equal((await fetch(base + '/%2e%2e%2f.env')).status, 404);
 });
