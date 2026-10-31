@@ -8,7 +8,6 @@ import { acquireWorkerLock } from './worker-lock.mjs';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC = resolve(ROOT, 'public');
-const OPERATOR_ROUTES = new Set(['/api/setup/deploy-oracle']);
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
@@ -102,8 +101,9 @@ export function createGuardianServer({ chain, agents, market }) {
       return status(session);
     },
     '/api/wallet/disconnect': async (_, session) => { if (session) session.wallet = null; return status(session); },
-    '/api/setup/fund-agent': (_, session) => chain.buildFundAgent(needWallet(session)),
-    '/api/setup/deploy-oracle': async () => chain.deployOracle(await freshPrice()),
+    '/api/setup/fund': (_, session) => chain.buildFund(needWallet(session)),
+    // Any signed-in customer may trigger the one-time deploy: it refuses a second oracle and uses the live market price.
+    '/api/setup/deploy-oracle': async (_, session) => { needWallet(session); return chain.deployOracle(await freshPrice()); },
     // Any signed-in customer can refresh the shared price, paying from their own wallet.
     '/api/oracle/publish': async (_, session) => chain.buildPublishPrice(needWallet(session), await freshPrice()),
     '/api/loan/open': (body, session) => chain.buildOpenLoan(needWallet(session), body),
@@ -141,8 +141,6 @@ export function createGuardianServer({ chain, agents, market }) {
         const body = await readJson(req);
         const route = routes[url.pathname];
         if (!route) return json(res, 404, { error: 'API route not found.' });
-        // Oracle routes spend the operator key, so they stay on the operator's own machine even when PUBLIC_HOST is set.
-        if (OPERATOR_ROUTES.has(url.pathname) && publicHost && req.headers.host === publicHost) return json(res, 403, { error: 'Oracle setup is only available on the operator machine.' });
         let session = sessionFor(req);
         const cookie = {};
         if (!session && url.pathname === '/api/wallet/challenge') {

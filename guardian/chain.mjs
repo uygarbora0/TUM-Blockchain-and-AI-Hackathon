@@ -21,6 +21,8 @@ const AGENT_FLOOR = 6n * ADA;
 const OPERATOR_FLOOR = 8n * ADA;
 // A customer's agent pays a shared oracle refresh only above this, so its own rescue fees stay covered.
 const ORACLE_PAYER_FLOOR = AGENT_FLOOR + ADA;
+const AGENT_TOP_UP = 15n * ADA;
+const OPERATOR_TOP_UP = 10n * ADA;
 // The vault keeps this much so its continuing output stays above min-UTxO.
 const VAULT_KEEP = 2n * ADA;
 export const KEY_HASH = /^[0-9a-f]{56}$/;
@@ -432,17 +434,23 @@ export class GuardianChain {
   }
 
   /**
-   * Top up this owner's own agent fee wallet. It pays the agent's rescues and,
+   * Top up this owner's agent fee wallet and, while the oracle is not yet
+   * deployed, the oracle operator. The agent wallet pays the agent's rescues and,
    * in turn with the other running customers, the shared oracle refreshes.
    */
-  buildFundAgent(wallet) {
+  buildFund(wallet) {
     return this.serial(async () => {
       const lucid = await this.lucid();
       const agent = this.agentFor(wallet.ownerKeyHash);
-      if (sum(await lucid.utxosAt(agent.address)) >= ORACLE_PAYER_FLOOR) throw new GuardianError('Your agent fee wallet is already funded.', 409);
+      const agentAmount = sum(await lucid.utxosAt(agent.address)) < ORACLE_PAYER_FLOOR ? AGENT_TOP_UP : 0n;
+      // The operator needs ADA only to deploy the oracle, once; refreshes are paid by customers.
+      const operatorAmount = !(await this.readOracle(lucid)) && sum(await lucid.utxosAt(this.operator.address)) < OPERATOR_FLOOR ? OPERATOR_TOP_UP : 0n;
+      if (!agentAmount && !operatorAmount) throw new GuardianError('Your agent fee wallet and the oracle operator are already funded.', 409);
       await this.useWallet(lucid, wallet);
-      const tx = await lucid.newTx().pay.ToAddress(agent.address, { lovelace: 15n * ADA }).complete();
-      return { ...this.remember('fund-agent', tx), agent: (15n * ADA).toString() };
+      let tx = lucid.newTx();
+      if (agentAmount) tx = tx.pay.ToAddress(agent.address, { lovelace: agentAmount });
+      if (operatorAmount) tx = tx.pay.ToAddress(this.operator.address, { lovelace: operatorAmount });
+      return { ...this.remember('fund', await tx.complete()), agent: agentAmount.toString(), operator: operatorAmount.toString() };
     });
   }
 

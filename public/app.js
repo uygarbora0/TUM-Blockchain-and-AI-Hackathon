@@ -198,9 +198,16 @@ function renderServices(d) {
   if (!d.chain) return '';
   const { agent, oracle } = d.chain;
   return `<dl class="kv"><dt>Your agent's fee wallet</dt><dd>${agent ? `${link('address', agent.address)} · ${ada(agent.lovelace)} ${d.agentFunded ? '✓' : '(needs 6+)'}${d.agentFunded && BigInt(agent.lovelace ?? 0) < 7_000_000n ? ' · below 7: it no longer pays oracle refreshes' : ''}` : 'Connect your wallet: every customer gets their own agent key.'}</dd>
-      <dt>Shared oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} · only signs price updates; running agents pay their fees</dd></dl>
+      <dt>Shared oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} · ${d.oracleLive ? 'only signs price updates; customers pay their fees' : d.operatorFunded ? 'funded to deploy the oracle ✓' : 'needs 8+ ADA once, to deploy the shared oracle'}</dd></dl>
     <p class="vault-note">Your agent's fee wallet pays its own transactions and, in turn with the other running agents, the shared oracle's price refreshes (about 0.25 ADA each; only while it holds 7+ ADA). Keys live in <code>.local/guardian/</code>; your agent's key serves no other customer, and it cannot spend your vault through the owner path or touch your loan except to add collateral.</p>
-    ${BigInt(agent?.lovelace ?? 0) >= 7_000_000n ? '' : `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund-agent" ${busy || !d.connected ? 'disabled' : ''}>Send 15 ADA to your agent</button></div>`}`;
+    ${renderFundButton(d)}`;
+}
+
+// Mirrors chain.buildFund: top up the agent below 7 ADA, and the operator only until the oracle is deployed.
+function renderFundButton(d) {
+  const parts = [BigInt(d.chain.agent?.lovelace ?? 0) < 7_000_000n && '15 ADA to your agent', !d.oracleLive && !d.operatorFunded && '10 ADA to the oracle operator'].filter(Boolean);
+  if (!parts.length) return '';
+  return `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund" ${busy || !d.connected ? 'disabled' : ''}>Send ${parts.join(' + ')}</button></div>`;
 }
 
 function renderOracle(d) {
@@ -215,7 +222,8 @@ function renderOracle(d) {
       <p class="vault-note">One oracle serves every customer. While any customer's agent runs it is republished on a 0.5% move or every 20 minutes, paid by the running agents in turn. Contracts reject prices older than 30 minutes; if it is stale, publish it yourself from your wallet.</p>`;
   }
   return `<dl class="kv"><dt>Market now</dt><dd>${marketLine}</dd>${o.deployed ? `<dt>Deployment</dt><dd>${link('transaction', o.deployTx)} · confirming</dd>` : ''}</dl>
-    <div class="vault-actions"><button type="button" class="button button-primary" data-action="deploy-oracle" ${busy || !d.operatorFunded || !market?.ok ? 'disabled' : ''}>Deploy oracle at the market price</button></div>`;
+    <div class="vault-actions"><button type="button" class="button button-primary" data-action="deploy-oracle" ${busy || !d.connected || !d.operatorFunded || !market?.ok ? 'disabled' : ''}>Deploy oracle at the market price</button></div>
+    ${d.operatorFunded ? '' : '<p class="vault-note">The oracle operator needs 8+ ADA to deploy. Fund it in step 02.</p>'}`;
 }
 
 function renderLoanInfo(d) {
@@ -323,7 +331,7 @@ document.addEventListener('click', (event) => {
   const d = derive();
   if (action === 'rescan') { render(); if (!wallets().length) toast('Still no wallet extension on this page. Reload after enabling Lace.', true); }
   if (action === 'disconnect') disconnect();
-  if (action === 'fund-agent') ownerTransaction('/api/setup/fund-agent', {}, 'Agent funding');
+  if (action === 'fund') ownerTransaction('/api/setup/fund', {}, 'Funding');
   if (action === 'deploy-oracle') serverAction('/api/setup/deploy-oracle', {}, (r) => `Oracle deployment submitted by the operator key: ${link('transaction', r.txHash)}.`);
   if (action === 'publish-price') ownerTransaction('/api/oracle/publish', {}, 'Oracle price update');
   if (action === 'close-loan') ownerTransaction('/api/loan/close', {}, 'Loan repayment');
