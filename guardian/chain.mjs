@@ -442,10 +442,12 @@ export class GuardianChain {
     return this.serial(async () => {
       const lucid = await this.lucid();
       const agent = this.agentFor(wallet.ownerKeyHash);
-      const agentAmount = sum(await lucid.utxosAt(agent.address)) < ORACLE_PAYER_FLOOR ? AGENT_TOP_UP : 0n;
-      // The operator needs ADA only to deploy the oracle, once; refreshes are paid by customers.
-      const operatorAmount = !(await this.readOracle(lucid)) && sum(await lucid.utxosAt(this.operator.address)) < OPERATOR_FLOOR ? OPERATOR_TOP_UP : 0n;
-      if (!agentAmount && !operatorAmount) throw new GuardianError('Your agent fee wallet and the oracle operator are already funded.', 409);
+      // Before the oracle exists, one transaction funds both: the operator needs ADA only to deploy it,
+      // once (refreshes are paid by customers). Afterwards only a low agent wallet is topped up.
+      const deployed = Boolean(await this.readOracle(lucid));
+      const agentAmount = !deployed || sum(await lucid.utxosAt(agent.address)) < ORACLE_PAYER_FLOOR ? AGENT_TOP_UP : 0n;
+      const operatorAmount = deployed ? 0n : OPERATOR_TOP_UP;
+      if (!agentAmount) throw new GuardianError('Your agent fee wallet is already funded.', 409);
       await this.useWallet(lucid, wallet);
       let tx = lucid.newTx();
       if (agentAmount) tx = tx.pay.ToAddress(agent.address, { lovelace: agentAmount });

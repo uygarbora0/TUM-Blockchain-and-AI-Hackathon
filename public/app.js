@@ -203,11 +203,11 @@ function renderServices(d) {
     ${renderFundButton(d)}`;
 }
 
-// Mirrors chain.buildFund: top up the agent below 7 ADA, and the operator only until the oracle is deployed.
+// Mirrors chain.buildFund: before the oracle is deployed one button funds both; afterwards only a low agent wallet.
 function renderFundButton(d) {
-  const parts = [BigInt(d.chain.agent?.lovelace ?? 0) < 7_000_000n && '15 ADA to your agent', !d.oracleLive && !d.operatorFunded && '10 ADA to the oracle operator'].filter(Boolean);
-  if (!parts.length) return '';
-  return `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund" ${busy || !d.connected ? 'disabled' : ''}>Send ${parts.join(' + ')}</button></div>`;
+  const label = !d.oracleLive ? 'Send 15 ADA to your agent + 10 ADA to the oracle operator' : BigInt(d.chain.agent?.lovelace ?? 0) < 7_000_000n ? 'Send 15 ADA to your agent' : null;
+  if (!label) return '';
+  return `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund" ${busy || !d.connected ? 'disabled' : ''}>${label}</button></div>`;
 }
 
 function renderOracle(d) {
