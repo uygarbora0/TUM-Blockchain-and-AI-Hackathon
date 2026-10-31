@@ -2,6 +2,14 @@ import { analyze, createDemoPosition, validatePolicy, validatePosition } from '.
 
 export const MAX_JOB_INPUT = 16000;
 export const dashboardUrl = () => process.env.DASHBOARD_URL?.trim() || 'http://127.0.0.1:3000';
+// Append the exact dashboard link to a model-written message so the canonical URL always
+// reaches the user verbatim. A small model can mistype an unusual hostname; this guarantees
+// a working link. Skips appending if the model already included the exact URL.
+export function withDashboardCta(message) {
+ const url = dashboardUrl();
+ const text = String(message ?? '').trimEnd();
+ return text.includes(url) ? text : `${text}\n\n→ Review and act on your position in the Liquidation Guardian dashboard: ${url}`;
+}
 export const GUARDIAN_HELP = `Liquidation Guardian checks a borrowing position and calculates rescue options. It cannot move funds.
 
 Send "guardian demo" for a labelled price-drop simulation, or send JSON with {"position": {...}, "policy": {...}}. The position must include id, label, protocol, network, collateral (symbol, amount, priceUsd, liquidationThreshold), debt (symbol, amount, priceUsd), reserve (collateral and debt quantities), and priceUpdatedAt (an ISO timestamp). Policy is optional.

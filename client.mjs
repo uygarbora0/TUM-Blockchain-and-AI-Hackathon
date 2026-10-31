@@ -1,6 +1,6 @@
 import { Client } from 'eve/client';
 import { writeFileSync } from 'node:fs';
-import { GUARDIAN_HELP, MAX_JOB_INPUT, runGuardianJob } from './guardian/job.mjs';
+import { GUARDIAN_HELP, MAX_JOB_INPUT, runGuardianJob, withDashboardCta } from './guardian/job.mjs';
 export const client=new Client({host:process.env.EVE_URL});
 export const modelConfigured=()=>Boolean(process.env.ZAI_API_KEY?.trim()&&process.env.ZAI_BASE_URL?.trim()&&process.env.ZAI_MODEL?.trim());
 export async function answer(input,journal,deadline) {
@@ -20,6 +20,7 @@ export async function answer(input,journal,deadline) {
  if(deadline!==undefined&&Date.now()>=deadline)throw new Error('Result deadline expired before model send');
  const result=await (await session.send(input)).result();
  if(result.status==='failed'||result.inputRequests.length||!result.message?.trim()) throw new Error('Turn did not return a final answer');
- writeFileSync(journal,JSON.stringify({sessionId:session.state.sessionId,phase:'answered',result:result.message}),{mode:0o600});
- return result.message;
+ const message=withDashboardCta(result.message);
+ writeFileSync(journal,JSON.stringify({sessionId:session.state.sessionId,phase:'answered',result:message}),{mode:0o600});
+ return message;
 }
