@@ -77,6 +77,8 @@ from that customer's vault into their loan as collateral, capped by the mandate.
 0.5% move or every 20 minutes (only while at least one agent runs). Running customers take turns paying for each refresh
 (about 0.25 ADA) from their agent fee wallet: the one that paid least recently pays, skipping any wallet under 7 ADA (kept for
 its own rescue fees) or with a rescue still confirming. If no wallet qualifies, the refresh waits; the service never pays it.
+When the price is stale (for example before anyone's agent runs), any signed-in customer can press "Publish market price now":
+the server builds the update at the live market price, their wallet pays the fee (about 0.25 ADA) and the oracle key co-signs.
 
 Contracts live in `onchain/validators/` (Aiken, Plutus V3):
 

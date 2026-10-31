@@ -211,8 +211,8 @@ function renderOracle(d) {
   if (d.oracleLive) {
     return `<dl class="kv"><dt>On-chain price</dt><dd>${usdPrice(o.price)} · updated ${ago(Date.now() - o.updatedAt)}${o.fresh ? '' : ' · <strong>stale, cannot open or liquidate loans</strong>'}</dd><dt>Market now</dt><dd>${marketLine}</dd>
       <dt>Oracle address</dt><dd>${link('address', o.address)}</dd><dt>Lending contract</dt><dd>${escapeHtml(o.lendingHash)}</dd></dl>
-      <div class="vault-actions"><button type="button" class="button button-light" data-action="publish-price" ${busy || !d.operatorFunded ? 'disabled' : ''}>Publish market price now</button></div>
-      <p class="vault-note">One oracle serves every customer. While any customer's agent runs it is republished on a 0.5% move or every 20 minutes. Contracts reject prices older than 30 minutes.</p>`;
+      <div class="vault-actions"><button type="button" class="button ${o.fresh ? 'button-light' : 'button-primary'}" data-action="publish-price" ${busy || !d.connected ? 'disabled' : ''}>Publish market price now (you pay ≈0.25 ADA)</button></div>
+      <p class="vault-note">One oracle serves every customer. While any customer's agent runs it is republished on a 0.5% move or every 20 minutes, paid by the running agents in turn. Contracts reject prices older than 30 minutes; if it is stale, publish it yourself from your wallet.</p>`;
   }
   return `<dl class="kv"><dt>Market now</dt><dd>${marketLine}</dd>${o.deployed ? `<dt>Deployment</dt><dd>${link('transaction', o.deployTx)} · confirming</dd>` : ''}</dl>
     <div class="vault-actions"><button type="button" class="button button-primary" data-action="deploy-oracle" ${busy || !d.operatorFunded || !market?.ok ? 'disabled' : ''}>Deploy oracle at the market price</button></div>`;
@@ -325,7 +325,7 @@ document.addEventListener('click', (event) => {
   if (action === 'disconnect') disconnect();
   if (action === 'fund-agent') ownerTransaction('/api/setup/fund-agent', {}, 'Agent funding');
   if (action === 'deploy-oracle') serverAction('/api/setup/deploy-oracle', {}, (r) => `Oracle deployment submitted by the operator key: ${link('transaction', r.txHash)}.`);
-  if (action === 'publish-price') serverAction('/api/oracle/publish', {}, (r) => `Published ${usdPrice(r.price)} on-chain: ${link('transaction', r.txHash)}.`);
+  if (action === 'publish-price') ownerTransaction('/api/oracle/publish', {}, 'Oracle price update');
   if (action === 'close-loan') ownerTransaction('/api/loan/close', {}, 'Loan repayment');
   if (action === 'withdraw') ownerTransaction('/api/vault/withdraw', {}, 'Withdrawal');
   if (action === 'revoke-all' && confirm('Revoke everything? This stops your agent, closes your loan, empties the vault and returns your agent fee wallet to you.')) ownerTransaction('/api/revoke', {}, 'Revoke everything');

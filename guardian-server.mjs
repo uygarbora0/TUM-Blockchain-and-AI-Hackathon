@@ -8,7 +8,7 @@ import { acquireWorkerLock } from './worker-lock.mjs';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC = resolve(ROOT, 'public');
-const OPERATOR_ROUTES = new Set(['/api/setup/deploy-oracle', '/api/oracle/publish']);
+const OPERATOR_ROUTES = new Set(['/api/setup/deploy-oracle']);
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
@@ -104,7 +104,8 @@ export function createGuardianServer({ chain, agents, market }) {
     '/api/wallet/disconnect': async (_, session) => { if (session) session.wallet = null; return status(session); },
     '/api/setup/fund-agent': (_, session) => chain.buildFundAgent(needWallet(session)),
     '/api/setup/deploy-oracle': async () => chain.deployOracle(await freshPrice()),
-    '/api/oracle/publish': async () => chain.publishPrice(await freshPrice()),
+    // Any signed-in customer can refresh the shared price, paying from their own wallet.
+    '/api/oracle/publish': async (_, session) => chain.buildPublishPrice(needWallet(session), await freshPrice()),
     '/api/loan/open': (body, session) => chain.buildOpenLoan(needWallet(session), body),
     '/api/loan/close': (_, session) => chain.buildCloseLoan(needWallet(session)),
     '/api/vault/deposit': (body, session) => chain.buildDeposit(needWallet(session), body),

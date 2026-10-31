@@ -255,11 +255,11 @@ export class GuardianChain {
     lucid.selectWallet.fromAddress(wallet.address, await this.walletUtxos(lucid, wallet));
   }
 
-  /** `cosigner` is an agent owner key hash whose agent key also signs at submission. */
-  remember(kind, tx, cosigner = null) {
+  /** `cosignKey` is a server-held key (agent or operator) that also signs at submission. */
+  remember(kind, tx, cosignKey = null) {
     const txHash = tx.toHash();
     const txCbor = tx.toCBOR();
-    this.pending.set(txHash, { kind, cbor: txCbor, createdAt: this.clock(), cosigner });
+    this.pending.set(txHash, { kind, cbor: txCbor, createdAt: this.clock(), cosignKey });
     for (const [key, item] of this.pending) if (this.clock() - item.createdAt > 15 * 60_000) this.pending.delete(key);
     return { txHash, txCbor, kind, fee: tx.toTransaction().body().fee().toString() };
   }
@@ -389,33 +389,47 @@ export class GuardianChain {
   }
 
   /**
-   * Publish a new price. The contract needs only the operator's signature, so
-   * with `payerOwnerKeyHash` that customer's agent fee wallet pays the fee and
-   * collateral and the operator key just co-signs; without it the operator pays.
+   * A price update, paid from whatever wallet `lucid` has selected. The contract
+   * needs only the operator's signature, so the operator key co-signs and a
+   * customer pays the fee and collateral.
    */
+  async priceTx(lucid, priceMicro) {
+    const oracle = await this.readOracle(lucid);
+    if (!oracle) throw new GuardianError('The oracle is not on-chain yet.', 409);
+    const { validator, address } = this.oracleScript();
+    const w = this.window();
+    const tx = await lucid.newTx()
+      .collectFrom([oracle.utxo], UNIT)
+      .attach.SpendingValidator(validator)
+      .pay.ToContract(address, { kind: 'inline', value: encodePrice(priceMicro, w.now) }, oracle.utxo.assets)
+      .addSignerKey(this.operator.keyHash)
+      .validFrom(w.lower).validTo(w.upper)
+      .complete();
+    return { tx, updatedAt: w.now };
+  }
+
+  /** Publish a price paid by `payerOwnerKeyHash`'s agent fee wallet (the keeper's automatic refresh). */
   publishPrice(priceMicro, payerOwnerKeyHash) {
     return this.serial(async () => {
       const lucid = await this.lucid();
-      const oracle = await this.readOracle(lucid);
-      if (!oracle) throw new GuardianError('The oracle is not on-chain yet.', 409);
-      const { validator, address } = this.oracleScript();
-      const payer = payerOwnerKeyHash ? this.agentFor(payerOwnerKeyHash) : this.operator;
-      lucid.selectWallet.fromPrivateKey(payer.privateKey);
-      const w = this.window();
-      const tx = await lucid.newTx()
-        .collectFrom([oracle.utxo], UNIT)
-        .attach.SpendingValidator(validator)
-        .pay.ToContract(address, { kind: 'inline', value: encodePrice(priceMicro, w.now) }, oracle.utxo.assets)
-        .addSignerKey(this.operator.keyHash)
-        .validFrom(w.lower).validTo(w.upper)
-        .complete();
-      const signing = payer === this.operator ? tx.sign.withWallet() : tx.sign.withWallet().sign.withPrivateKey(this.operator.privateKey);
-      const txHash = await signing.complete().then(s => s.submit());
-      return { txHash, price: priceMicro, updatedAt: w.now };
+      lucid.selectWallet.fromPrivateKey(this.agentFor(payerOwnerKeyHash).privateKey);
+      const { tx, updatedAt } = await this.priceTx(lucid, priceMicro);
+      const txHash = await tx.sign.withWallet().sign.withPrivateKey(this.operator.privateKey).complete().then(s => s.submit());
+      return { txHash, price: priceMicro, updatedAt };
     });
   }
 
   // ---- Owner transactions (unsigned; the browser wallet signs) ----
+
+  /** A price refresh the customer pays from their own wallet; the operator key co-signs at submission. */
+  buildPublishPrice(wallet, priceMicro) {
+    return this.serial(async () => {
+      const lucid = await this.lucid();
+      await this.useWallet(lucid, wallet);
+      const { tx } = await this.priceTx(lucid, priceMicro);
+      return { ...this.remember('oracle-refresh', tx, this.operator.privateKey), price: priceMicro.toString() };
+    });
+  }
 
   /**
    * Top up this owner's own agent fee wallet. It pays the agent's rescues and,
@@ -550,7 +564,7 @@ export class GuardianChain {
       if (agentUtxos.length) tx = tx.collectFrom(agentUtxos).addSignerKey(agent.keyHash);
       const built = await tx.complete();
       return {
-        ...this.remember('revoke', built, agentUtxos.length ? wallet.ownerKeyHash : null),
+        ...this.remember('revoke', built, agentUtxos.length ? agent.privateKey : null),
         loanClosed: Boolean(loan), vaultLovelace: sum(vaultUtxos).toString(), agentLovelace: sum(agentUtxos).toString(),
       };
     });
@@ -566,7 +580,7 @@ export class GuardianChain {
     const pending = this.pending.get(hash);
     if (pending?.cbor !== txCbor) throw new GuardianError('Unknown or expired transaction. Build it again.', 409);
     const assembled = unsigned.assemble([witnessSet]);
-    const signed = pending.cosigner ? assembled.sign.withPrivateKey(this.agentFor(pending.cosigner).privateKey) : assembled;
+    const signed = pending.cosignKey ? assembled.sign.withPrivateKey(pending.cosignKey) : assembled;
     const txHash = await signed.complete().then(s => s.submit());
     this.pending.delete(hash);
     return { txHash, kind: pending.kind };
