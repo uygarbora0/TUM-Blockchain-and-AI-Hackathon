@@ -51,9 +51,9 @@ prices come from Kraken, CoinGecko and Coinbase, and every balance, loan and res
 Operator setup, once for the whole service:
 
 1. Set `BLOCKFROST_API_KEY_PREPROD` in `.env` and start `npm run dev`.
-2. Send 30+ test ADA from the faucet to the oracle operator address printed at startup.
-   The service pays for the shared oracle; customers never do.
-3. Deploy the price oracle at the live market price from the dashboard (signed and paid by the oracle key).
+2. Send 10+ test ADA from the faucet to the oracle operator address printed at startup.
+3. Deploy the price oracle at the live market price from the dashboard (signed and paid by the oracle key, once).
+   After that, customers pay for the shared oracle: each refresh is paid by a running customer's agent fee wallet and only co-signed by the oracle key.
 
 Each customer (the dashboard walks them through it):
 
@@ -61,7 +61,8 @@ Each customer (the dashboard walks them through it):
    It moves no funds; it proves the wallet is yours, so this browser session can act only for it.
 2. Fund your own agent's fee wallet with 15 ADA (one wallet signature). Every customer gets their own agent key.
 3. Open a loan: lock ADA, mint tUSD. Opening near the limit (for example health 1.30 with trigger 1.32) lets real market moves trigger a rescue.
-4. Sign the mandate and fund the vault, test it, then start the agent.
+4. Sign the mandate and fund the vault, then start the agent.
+5. To leave, "Revoke everything" at the end of the setup page closes the loan, empties the vault, stops the agent and returns its fee wallet, in one transaction and one signature.
 
 Each customer has their own agent: its own key and fee wallet, policy, activity log and vault mandate.
 A customer's mandate names only their agent's key, so no agent can spend another customer's vault.
@@ -71,9 +72,11 @@ Agents run side by side; signing in or stopping an agent never affects another c
 Each running agent costs about two Blockfrost reads a minute, plus two for the shared oracle and the dashboards' polling,
 so plan the Blockfrost tier for the number of customers (the free 50,000 requests a day covers roughly ten).
 
-Every 60 seconds the server fetches the market once and refreshes the one shared oracle on a 0.5% move or every 20 minutes
-(only while at least one agent runs). Each running agent then checks its own loan, and below the trigger it moves ADA
-from that customer's vault into their loan as collateral, capped by the mandate.
+Every 60 seconds the server fetches the market once and each running agent checks its own loan: below the trigger it moves ADA
+from that customer's vault into their loan as collateral, capped by the mandate. Then the one shared oracle is refreshed on a
+0.5% move or every 20 minutes (only while at least one agent runs). Running customers take turns paying for each refresh
+(about 0.25 ADA) from their agent fee wallet: the one that paid least recently pays, skipping any wallet under 7 ADA (kept for
+its own rescue fees) or with a rescue still confirming. If no wallet qualifies, the refresh waits; the service never pays it.
 
 Contracts live in `onchain/validators/` (Aiken, Plutus V3):
 

@@ -197,10 +197,10 @@ function renderWallet(d) {
 function renderServices(d) {
   if (!d.chain) return '';
   const { agent, oracle } = d.chain;
-  return `<dl class="kv"><dt>Your agent's fee wallet</dt><dd>${agent ? `${link('address', agent.address)} · ${ada(agent.lovelace)} ${d.agentFunded ? '✓' : '(needs 6+)'}` : 'Connect your wallet: every customer gets their own agent key.'}</dd>
-      <dt>Shared oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} ${d.operatorFunded ? '✓' : '· low: the service operator tops this up, not you'}</dd></dl>
-    <p class="vault-note">You pay only your own agent's transaction fees. The shared price oracle is funded by whoever runs this service. Keys live in <code>.local/guardian/</code>; your agent's key serves no other customer, and it cannot spend your vault through the owner path or touch your loan except to add collateral.</p>
-    ${d.agentFunded ? '' : `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund-agent" ${busy || !d.connected ? 'disabled' : ''}>Send 15 ADA to your agent</button></div>`}`;
+  return `<dl class="kv"><dt>Your agent's fee wallet</dt><dd>${agent ? `${link('address', agent.address)} · ${ada(agent.lovelace)} ${d.agentFunded ? '✓' : '(needs 6+)'}${d.agentFunded && BigInt(agent.lovelace ?? 0) < 7_000_000n ? ' · below 7: it no longer pays oracle refreshes' : ''}` : 'Connect your wallet: every customer gets their own agent key.'}</dd>
+      <dt>Shared oracle operator</dt><dd>${link('address', oracle.operator)} · ${ada(oracle.lovelace)} · only signs price updates; running agents pay their fees</dd></dl>
+    <p class="vault-note">Your agent's fee wallet pays its own transactions and, in turn with the other running agents, the shared oracle's price refreshes (about 0.25 ADA each; only while it holds 7+ ADA). Keys live in <code>.local/guardian/</code>; your agent's key serves no other customer, and it cannot spend your vault through the owner path or touch your loan except to add collateral.</p>
+    ${BigInt(agent?.lovelace ?? 0) >= 7_000_000n ? '' : `<div class="vault-actions"><button type="button" class="button button-primary" data-action="fund-agent" ${busy || !d.connected ? 'disabled' : ''}>Send 15 ADA to your agent</button></div>`}`;
 }
 
 function renderOracle(d) {
@@ -242,9 +242,17 @@ function renderVaultInfo(d) {
 function renderAgentStep(d) {
   if (!d.mandate) return '<p class="vault-note">Complete the steps above first.</p>';
   return `<div class="vault-actions">
-      <button type="button" class="button button-light" data-action="agent-ok" ${busy ? 'disabled' : ''}>Test: agent pays you 1 ADA</button>
-      <button type="button" class="button button-light" data-action="agent-over" ${busy ? 'disabled' : ''}>Test: agent exceeds the limit</button>
       ${d.running ? '<a class="button button-primary" href="#monitor">Open live monitor</a>' : `<button type="button" class="button button-primary" data-action="start" ${busy || !d.steps.slice(0, 5).every(Boolean) ? 'disabled' : ''}>${icon('play')}Start the agent</button>`}</div>`;
+}
+
+function renderRevoke(d) {
+  if (!d.connected) return '<p class="vault-note">Connect your wallet first.</p>';
+  const agentAda = BigInt(d.chain?.agent?.lovelace ?? 0);
+  const vaultAda = BigInt(d.chain?.vault?.lovelace ?? 0);
+  const parts = [d.loan && `repays ${tusd(d.loan.debt)} and closes your loan (collateral ${ada(d.loan.collateral)} back to you)`, vaultAda > 0n && `withdraws ${ada(vaultAda)} from the vault, which revokes the agent's mandate`, agentAda > 0n && `returns ${ada(agentAda)} from your agent's fee wallet`, d.running && 'stops your agent'].filter(Boolean);
+  if (!parts.length) return '<p class="vault-note">Nothing to revoke: no loan, no vault funds and an empty agent fee wallet.</p>';
+  return `<p class="vault-note">One transaction, one signature: it ${parts.join('; ')}. Everything goes to your wallet.</p>
+    <div class="vault-actions"><button type="button" class="button button-danger-outline" data-action="revoke-all" ${busy ? 'disabled' : ''}>Revoke everything</button></div>`;
 }
 
 function renderLoanPreview(d) {
@@ -294,6 +302,7 @@ function render() {
   $('#loan-info').innerHTML = renderLoanInfo(d);
   $('#vault-info').innerHTML = renderVaultInfo(d);
   $('#step-agent').innerHTML = renderAgentStep(d);
+  $('#revoke-all').innerHTML = renderRevoke(d);
   $('#loan-submit').disabled = busy || !d.connected || !d.oracleLive || Boolean(d.loan);
   $('#loan-preview').textContent = d.loan ? 'Loan open. Close it to open a new one.' : renderLoanPreview(d);
   $('#mandate-submit').disabled = busy || !d.connected || !d.oracleLive || Boolean(d.mandate);
@@ -319,17 +328,10 @@ document.addEventListener('click', (event) => {
   if (action === 'publish-price') serverAction('/api/oracle/publish', {}, (r) => `Published ${usdPrice(r.price)} on-chain: ${link('transaction', r.txHash)}.`);
   if (action === 'close-loan') ownerTransaction('/api/loan/close', {}, 'Loan repayment');
   if (action === 'withdraw') ownerTransaction('/api/vault/withdraw', {}, 'Withdrawal');
-  if (action === 'agent-ok') serverAction('/api/vault/agent-test', { amountAda: 1 }, agentResult);
-  if (action === 'agent-over' && d.mandate) serverAction('/api/vault/agent-test', { amountAda: micro(d.mandate.maxPerTx) + 1, checkLimits: false }, agentResult);
+  if (action === 'revoke-all' && confirm('Revoke everything? This stops your agent, closes your loan, empties the vault and returns your agent fee wallet to you.')) ownerTransaction('/api/revoke', {}, 'Revoke everything');
   if (action === 'start') serverAction('/api/agent/start', {}, () => { location.hash = 'monitor'; return 'Agent started. Watch the live monitor.'; });
   if (action === 'stop') serverAction('/api/agent/stop', {}, () => 'Agent stopped. No more rescues for your loan.');
 });
-
-function agentResult(r) {
-  if (r.status === 'submitted') return `The agent paid ${ada(r.amount)} to you, signed with its own key and accepted by the contract: ${link('transaction', r.txHash)}.`;
-  if (r.status === 'rejected_by_contract') return `<strong>The contract rejected the agent's payment above the per-transaction limit.</strong> The agent skipped its own checks for this test, so only the validator stopped it. Nothing was submitted.<br><small>${escapeHtml(r.reason)}</small>`;
-  return `The agent refused before building a transaction: ${escapeHtml(r.reason)}`;
-}
 
 $('#loan-form').addEventListener('input', () => { $('#loan-preview').textContent = renderLoanPreview(derive()); });
 $('#loan-form').addEventListener('submit', (event) => {

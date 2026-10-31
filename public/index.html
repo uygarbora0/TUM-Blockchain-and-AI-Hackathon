@@ -40,7 +40,7 @@
 
           <section class="panel settings-section vault-step" data-step="wallet"><div class="settings-section-heading"><span class="section-number">01</span><div><h2>Connect your wallet</h2><p>Lace, Eternl or another CIP-30 wallet set to Preprod. Your keys stay in the wallet.</p></div></div><div id="step-wallet" class="vault-body"></div></section>
 
-          <section class="panel settings-section vault-step" data-step="services"><div class="settings-section-heading"><span class="section-number">02</span><div><h2>Fund your agent</h2><p>Your own agent runs on this machine with its own key and pays its own transaction fees. The shared price oracle is paid for by the service, not by you.</p></div></div><div id="step-services" class="vault-body"></div></section>
+          <section class="panel settings-section vault-step" data-step="services"><div class="settings-section-heading"><span class="section-number">02</span><div><h2>Fund your agent</h2><p>Your own agent runs on this machine with its own key and pays its own transaction fees. Running agents also take turns paying the shared price oracle's refreshes (about 0.25 ADA each).</p></div></div><div id="step-services" class="vault-body"></div></section>
 
           <section class="panel settings-section vault-step" data-step="oracle"><div class="settings-section-heading"><span class="section-number">03</span><div><h2>Deploy the price oracle</h2><p>Publishes the live ADA/USD price on-chain, cross-checked across Kraken, CoinGecko and Coinbase.</p></div></div><div id="step-oracle" class="vault-body"></div></section>
 
@@ -60,7 +60,9 @@
             </div><p class="vault-note">Allowed recipients are fixed: your wallet and your own loan. The agent cannot pay anyone else.</p>
             <div class="form-actions"><p class="form-status" id="mandate-status" role="status"></p><button type="submit" class="button button-primary" id="mandate-submit"><span data-icon="lock"></span>Sign mandate &amp; fund vault</button></div></form></section>
 
-          <section class="panel settings-section vault-step" data-step="agent"><div class="settings-section-heading"><span class="section-number">06</span><div><h2>Test the mandate, then start the agent</h2><p>Prove the contract stops the agent before you trust it with your loan.</p></div></div><div id="step-agent" class="vault-body"></div></section>
+          <section class="panel settings-section vault-step" data-step="agent"><div class="settings-section-heading"><span class="section-number">06</span><div><h2>Start the agent</h2><p>It watches your loan and tops it up from the vault, within your mandate.</p></div></div><div id="step-agent" class="vault-body"></div></section>
+
+          <section class="panel settings-section"><div class="settings-section-heading"><span class="section-number">✕</span><div><h2>Revoke everything</h2><p>Get out in one step: loan closed, vault emptied, agent stopped and its fee wallet returned.</p></div></div><div id="revoke-all" class="vault-body"></div></section>
         </section>
 
         <section class="view" id="view-monitor" aria-labelledby="monitor-title" hidden>

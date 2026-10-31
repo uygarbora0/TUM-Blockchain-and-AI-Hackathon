@@ -109,7 +109,8 @@ export function createGuardianServer({ chain, agents, market }) {
     '/api/loan/close': (_, session) => chain.buildCloseLoan(needWallet(session)),
     '/api/vault/deposit': (body, session) => chain.buildDeposit(needWallet(session), body),
     '/api/vault/withdraw': (_, session) => chain.buildWithdraw(needWallet(session)),
-    '/api/vault/agent-test': (body, session) => chain.agentPay(needWallet(session).ownerKeyHash, { amountAda: body.amountAda, checkLimits: body.checkLimits !== false }),
+    // Stop the agent first so it cannot spend the vault or its fee wallet while the owner signs.
+    '/api/revoke': async (_, session) => { const agent = myAgent(session); if (agent.state.running) agent.stop(); return chain.buildRevokeAll(needWallet(session)); },
     '/api/tx/submit': body => chain.submitOwner(body.txCbor, body.witnessSet),
     '/api/agent/start': (_, session) => agents.start(needWallet(session)),
     '/api/agent/stop': async (_, session) => { const agent = myAgent(session); agent.stop(); return agent.snapshot(); },
@@ -188,7 +189,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   server.listen(Number(portText), '127.0.0.1', () => {
     console.log(`Liquidation Guardian → http://127.0.0.1:${portText}`);
     console.log(`Cardano ${chain.network}${chain.configured ? '' : ' (set BLOCKFROST_API_KEY_PREPROD to connect)'}`);
-    console.log(`Oracle operator:      ${chain.operator.address} (you fund this from the faucet; customers never do)`);
+    console.log(`Oracle operator:      ${chain.operator.address} (one-time deploy only; customers' agents pay each price refresh)`);
     console.log(`Customer agents:      ${agents.agents.size} (${agents.running.length} running)`);
   });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { release(); process.exit(0); }));

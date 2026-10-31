@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { healthBps, collateralFor, ADA, VAULT_KEEP, OPERATOR_FLOOR, MAX_PRICE_AGE_MS, KEY_HASH } from './chain.mjs';
+import { healthBps, collateralFor, ADA, VAULT_KEEP, ORACLE_PAYER_FLOOR, MAX_PRICE_AGE_MS, KEY_HASH } from './chain.mjs';
 import { marketPrice } from './prices.mjs';
 import { GuardianError } from './errors.mjs';
 
@@ -144,36 +144,44 @@ export class GuardianAgent extends Journal {
 
 /**
  * Keeps the one shared on-chain oracle near the market so every customer's
- * loan is valued, borrowed against and liquidated at a real price.
+ * loan is valued, borrowed against and liquidated at a real price. Customers
+ * pay for it: each refresh is paid by the running agent whose fee wallet paid
+ * least recently; the operator key only signs.
  */
 export class OracleKeeper extends Journal {
   constructor({ chain, file, clock = Date.now }) {
-    super({ file, clock, state: { events: [] } });
+    super({ file, clock, state: { events: [], paidAt: {} } });
     this.chain = chain;
   }
 
   /** Returns `{ oracle }` as read this tick so agents can reuse it, or `{}` when nothing was read. */
-  async tick(market) {
-    try { return await this.check(market); } catch (error) {
+  async read() {
+    if (!this.chain.deployment) return {};
+    try { return { oracle: (await this.chain.oracleView()).oracle }; } catch (error) {
       this.once('error', `Oracle: ${String(error?.message || error).slice(0, 300)}`);
       return {};
     }
   }
 
-  async check(market) {
-    if (!this.chain.deployment) return {};
-    const view = await this.chain.oracleView();
-    if (!market.ok || !view.oracle) return { oracle: view.oracle };
-    const moved = Math.abs(Number(market.priceMicro - view.oracle.price)) / Number(view.oracle.price);
-    if (moved < ORACLE_MOVE && view.oracle.ageMs < ORACLE_REFRESH_MS) return { oracle: view.oracle };
-    if (view.operatorLovelace < OPERATOR_FLOOR) {
-      this.once('oracle', 'The oracle operator wallet is low on ADA. The server operator must top it up; its address is printed at startup.');
-      return { oracle: view.oracle };
+  async tick(market, oracle, payers) {
+    try { await this.check(market, oracle, payers); } catch (error) {
+      this.once('error', `Oracle: ${String(error?.message || error).slice(0, 300)}`);
     }
-    const { txHash } = await this.chain.publishPrice(market.priceMicro);
-    this.event('oracle', `Published $${market.priceUsd.toFixed(5)} on-chain (${(moved * 100).toFixed(2)}% move, previous price ${Math.round(view.oracle.ageMs / 60000)} min old).`, { txHash });
-    // The new price is not confirmed yet; agents read the oracle themselves this tick.
-    return {};
+  }
+
+  async check(market, oracle, payers) {
+    if (!market.ok || !oracle) return;
+    const moved = Math.abs(Number(market.priceMicro - oracle.price)) / Number(oracle.price);
+    if (moved < ORACLE_MOVE && oracle.ageMs < ORACLE_REFRESH_MS) return;
+    const turns = [...payers].sort((a, b) => (this.state.paidAt[a] ?? '').localeCompare(this.state.paidAt[b] ?? ''));
+    for (const owner of turns) {
+      if (await this.chain.agentLovelace(owner) < ORACLE_PAYER_FLOOR) continue;
+      const { txHash } = await this.chain.publishPrice(market.priceMicro, owner);
+      this.state.paidAt[owner] = new Date(this.clock()).toISOString();
+      this.event('oracle', `Published $${market.priceUsd.toFixed(5)} on-chain (${(moved * 100).toFixed(2)}% move, previous price ${Math.round(oracle.ageMs / 60000)} min old), paid by agent ${owner.slice(0, 8)}…`, { txHash, payer: owner });
+      return;
+    }
+    this.once('oracle', `The oracle needs a refresh, but no running agent's fee wallet has ${Number(ORACLE_PAYER_FLOOR / ADA)}+ ADA to pay for it. Customers top up their agent fee wallet from the dashboard.`);
   }
 }
 
@@ -231,15 +239,22 @@ export class GuardianAgents {
     return agent.snapshot();
   }
 
-  /** The oracle is refreshed only while at least one customer's agent runs. */
+  /**
+   * The oracle is refreshed only while at least one customer's agent runs.
+   * Rescues go first; the refresh is then paid by an agent with no rescue still
+   * confirming, so the two never spend the same fee-wallet output.
+   */
   async tick() {
     const running = this.running;
     if (this.ticking || !running.length) return;
     this.ticking = true;
     try {
       const market = await this.market();
-      const shared = await this.keeper.tick(market);
+      const shared = await this.keeper.read();
       for (const agent of running) await agent.tick(market, shared);
+      const now = this.clock();
+      const payers = running.filter(agent => !agent.state.lastRescue || now - Date.parse(agent.state.lastRescue.at) >= RESCUE_SETTLE_MS).map(agent => agent.ownerKeyHash);
+      await this.keeper.tick(market, shared.oracle, payers);
     } finally { this.ticking = false; }
   }
 }

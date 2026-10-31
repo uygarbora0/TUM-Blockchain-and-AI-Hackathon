@@ -19,6 +19,8 @@ export const MAX_PRICE_AGE_MS = 1_800_000;
 // Wallet floors for the agent and oracle keys: fees plus script collateral.
 const AGENT_FLOOR = 6n * ADA;
 const OPERATOR_FLOOR = 8n * ADA;
+// A customer's agent pays a shared oracle refresh only above this, so its own rescue fees stay covered.
+const ORACLE_PAYER_FLOOR = AGENT_FLOOR + ADA;
 // The vault keeps this much so its continuing output stays above min-UTxO.
 const VAULT_KEEP = 2n * ADA;
 export const KEY_HASH = /^[0-9a-f]{56}$/;
@@ -253,10 +255,11 @@ export class GuardianChain {
     lucid.selectWallet.fromAddress(wallet.address, await this.walletUtxos(lucid, wallet));
   }
 
-  remember(kind, tx) {
+  /** `cosigner` is an agent owner key hash whose agent key also signs at submission. */
+  remember(kind, tx, cosigner = null) {
     const txHash = tx.toHash();
     const txCbor = tx.toCBOR();
-    this.pending.set(txHash, { kind, cbor: txCbor, createdAt: this.clock() });
+    this.pending.set(txHash, { kind, cbor: txCbor, createdAt: this.clock(), cosigner });
     for (const [key, item] of this.pending) if (this.clock() - item.createdAt > 15 * 60_000) this.pending.delete(key);
     return { txHash, txCbor, kind, fee: tx.toTransaction().body().fee().toString() };
   }
@@ -385,13 +388,19 @@ export class GuardianChain {
     });
   }
 
-  publishPrice(priceMicro) {
+  /**
+   * Publish a new price. The contract needs only the operator's signature, so
+   * with `payerOwnerKeyHash` that customer's agent fee wallet pays the fee and
+   * collateral and the operator key just co-signs; without it the operator pays.
+   */
+  publishPrice(priceMicro, payerOwnerKeyHash) {
     return this.serial(async () => {
       const lucid = await this.lucid();
       const oracle = await this.readOracle(lucid);
       if (!oracle) throw new GuardianError('The oracle is not on-chain yet.', 409);
       const { validator, address } = this.oracleScript();
-      lucid.selectWallet.fromPrivateKey(this.operator.privateKey);
+      const payer = payerOwnerKeyHash ? this.agentFor(payerOwnerKeyHash) : this.operator;
+      lucid.selectWallet.fromPrivateKey(payer.privateKey);
       const w = this.window();
       const tx = await lucid.newTx()
         .collectFrom([oracle.utxo], UNIT)
@@ -400,7 +409,8 @@ export class GuardianChain {
         .addSignerKey(this.operator.keyHash)
         .validFrom(w.lower).validTo(w.upper)
         .complete();
-      const txHash = await tx.sign.withWallet().complete().then(s => s.submit());
+      const signing = payer === this.operator ? tx.sign.withWallet() : tx.sign.withWallet().sign.withPrivateKey(this.operator.privateKey);
+      const txHash = await signing.complete().then(s => s.submit());
       return { txHash, price: priceMicro, updatedAt: w.now };
     });
   }
@@ -408,14 +418,14 @@ export class GuardianChain {
   // ---- Owner transactions (unsigned; the browser wallet signs) ----
 
   /**
-   * Top up this owner's own agent fee wallet. The shared oracle operator is
-   * funded by whoever runs this server, never by a customer.
+   * Top up this owner's own agent fee wallet. It pays the agent's rescues and,
+   * in turn with the other running customers, the shared oracle refreshes.
    */
   buildFundAgent(wallet) {
     return this.serial(async () => {
       const lucid = await this.lucid();
       const agent = this.agentFor(wallet.ownerKeyHash);
-      if (sum(await lucid.utxosAt(agent.address)) >= AGENT_FLOOR) throw new GuardianError('Your agent fee wallet is already funded.', 409);
+      if (sum(await lucid.utxosAt(agent.address)) >= ORACLE_PAYER_FLOOR) throw new GuardianError('Your agent fee wallet is already funded.', 409);
       await this.useWallet(lucid, wallet);
       const tx = await lucid.newTx().pay.ToAddress(agent.address, { lovelace: 15n * ADA }).complete();
       return { ...this.remember('fund-agent', tx), agent: (15n * ADA).toString() };
@@ -510,6 +520,42 @@ export class GuardianChain {
     });
   }
 
+  /**
+   * Revoke everything in one transaction the owner signs once: repay and close
+   * the loan, empty the vault (which revokes the agent's mandate), and return
+   * the agent fee wallet's ADA. The agent key co-signs at submission.
+   */
+  buildRevokeAll(wallet) {
+    return this.serial(async () => {
+      const lucid = await this.lucid();
+      const [loan] = await this.readLoans(lucid, wallet.ownerKeyHash);
+      const vault = this.vaultScript(wallet.ownerKeyHash);
+      const vaultUtxos = await lucid.utxosAt(vault.address);
+      const agent = this.agentFor(wallet.ownerKeyHash);
+      const agentUtxos = await lucid.utxosAt(agent.address);
+      if (!loan && !vaultUtxos.length && !agentUtxos.length) throw new GuardianError('Nothing to revoke: no loan, an empty vault and an empty agent fee wallet.', 409);
+      const lending = this.lendingScript();
+      if (loan) {
+        const held = sum(await this.walletUtxos(lucid, wallet), lending.hash + DEBT_TOKEN);
+        if (held < loan.debt) throw new GuardianError(`Revoking closes your loan, which needs ${Number(loan.debt) / 1e6} tUSD; your wallet holds ${Number(held) / 1e6}. Nothing was changed. To pull your rescue funds now, use "Withdraw all & revoke agent" in step 05.`, 409);
+      }
+      await this.useWallet(lucid, wallet);
+      let tx = lucid.newTx().addSignerKey(wallet.ownerKeyHash);
+      if (loan) tx = tx
+        .collectFrom([loan.utxo], BORROWER_UPDATE)
+        .mintAssets({ [lending.hash + DEBT_TOKEN]: -loan.debt, [lending.hash + LOAN_TOKEN]: -1n }, UNIT)
+        .attach.SpendingValidator(lending.validator);
+      if (vaultUtxos.length) tx = tx.collectFrom(vaultUtxos, OWNER_SPEND).attach.SpendingValidator(vault.validator);
+      // Change, including everything from the agent fee wallet, goes to the owner's wallet.
+      if (agentUtxos.length) tx = tx.collectFrom(agentUtxos).addSignerKey(agent.keyHash);
+      const built = await tx.complete();
+      return {
+        ...this.remember('revoke', built, agentUtxos.length ? wallet.ownerKeyHash : null),
+        loanClosed: Boolean(loan), vaultLovelace: sum(vaultUtxos).toString(), agentLovelace: sum(agentUtxos).toString(),
+      };
+    });
+  }
+
   /** Attach the wallet's witness set to a transaction this service built, then submit. */
   async submitOwner(txCbor, witnessSet) {
     if (typeof txCbor !== 'string' || typeof witnessSet !== 'string' || !/^[0-9a-f]+$/i.test(txCbor) || !/^[0-9a-f]+$/i.test(witnessSet)) throw new GuardianError('Signed transaction is invalid.');
@@ -519,7 +565,9 @@ export class GuardianChain {
     const hash = unsigned.toHash();
     const pending = this.pending.get(hash);
     if (pending?.cbor !== txCbor) throw new GuardianError('Unknown or expired transaction. Build it again.', 409);
-    const txHash = await unsigned.assemble([witnessSet]).complete().then(s => s.submit());
+    const assembled = unsigned.assemble([witnessSet]);
+    const signed = pending.cosigner ? assembled.sign.withPrivateKey(this.agentFor(pending.cosigner).privateKey) : assembled;
+    const txHash = await signed.complete().then(s => s.submit());
     this.pending.delete(hash);
     return { txHash, kind: pending.kind };
   }
@@ -572,34 +620,6 @@ export class GuardianChain {
     });
   }
 
-  /**
-   * Test payment from the vault back to the owner. With `checkLimits: false`
-   * the agent skips its own policy so the contract alone decides.
-   */
-  agentPay(ownerKeyHash, { amountAda, checkLimits = true } = {}) {
-    return this.serial(async () => {
-      const lucid = await this.lucid();
-      const amount = toLovelace(amountAda, 'Amount');
-      const { active } = await this.readMandate(lucid, ownerKeyHash);
-      if (!active) throw new GuardianError('No vault mandate for this agent.', 409);
-      const w = this.window();
-      const upper = Math.min(w.upper, Number(active.mandate.expiry));
-      if (checkLimits && amount > mandateAllowance(active.mandate, w.lower, upper)) return { status: 'blocked', reason: 'Amount exceeds what the mandate allows right now.' };
-      if (active.utxo.assets.lovelace - amount < VAULT_KEEP) return { status: 'blocked', reason: 'Not enough ADA left in the vault.' };
-      const vault = this.vaultScript(ownerKeyHash);
-      const owner = active.mandate.recipients[0];
-      const agent = this.agentFor(ownerKeyHash);
-      const result = await this.submitAgent(lucid, agent, tx => tx
-        .collectFrom([active.utxo], agentSpend(amount, 0))
-        .attach.SpendingValidator(vault.validator)
-        .pay.ToAddress(owner, { lovelace: amount })
-        .pay.ToContract(vault.address, { kind: 'inline', value: encodeMandate(nextMandate(active.mandate, amount, w.lower)) }, { ...active.utxo.assets, lovelace: active.utxo.assets.lovelace - amount })
-        .addSignerKey(agent.keyHash)
-        .validFrom(w.lower).validTo(upper));
-      return { ...result, amount: amount.toString(), recipient: owner };
-    });
-  }
-
   /** The agent's view of one owner: oracle, loan and mandate allowance. Pass `shared.oracle` to reuse one read across agents. */
   async agentView(ownerKeyHash, shared = {}) {
     const lucid = await this.lucid();
@@ -614,11 +634,14 @@ export class GuardianChain {
     };
   }
 
-  /** The oracle keeper's view: the shared price feed and its operator's balance. */
+  /** The oracle keeper's view: the shared price feed. */
   async oracleView() {
-    const lucid = await this.lucid();
-    return { oracle: await this.readOracle(lucid), operatorLovelace: sum(await lucid.utxosAt(this.operator.address)) };
+    return { oracle: await this.readOracle(await this.lucid()) };
+  }
+
+  async agentLovelace(ownerKeyHash) {
+    return sum(await (await this.lucid()).utxosAt(this.agentFor(ownerKeyHash).address));
   }
 }
 
-export { ADA, VAULT_KEEP, OPERATOR_FLOOR, AGENT_FLOOR };
+export { ADA, VAULT_KEEP, OPERATOR_FLOOR, AGENT_FLOOR, ORACLE_PAYER_FLOOR };
