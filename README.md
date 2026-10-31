@@ -89,6 +89,19 @@ The oracle is operated by this server, not by an independent provider such as Ch
 
 Every answer the Sokosumi agent returns (the deterministic report, the help text, the follow-up explanation, and the model's natural-language replies) ends with a call to action linking the customer to this dashboard, so a paid analysis hands the customer straight to where they can act on it. The link is read from `DASHBOARD_URL` in `.env` (default `http://127.0.0.1:3000`). Localhost only resolves on the machine running the dashboard; set `DASHBOARD_URL` to a public https URL (a tunnel or a deployment) before real customers use the agent, then restart the worker. No code change is needed.
 
+## Run the service: dashboard server + agent server
+
+Two long-running processes serve every customer:
+
+1. **Dashboard server** (`npm run dev`), exposed through the tunnel. `PUBLIC_HOST` is the tunnel hostname.
+2. **Agent server** (`npm run worker`, with `npm start` beside it for the model), on exactly one machine: the one whose CLI vault holds the Coworker runtime key.
+   In that machine's `.env`, set `WORKER_OPERATOR` to its OS username (`whoami`) and `DASHBOARD_URL` to the public dashboard URL.
+   The worker refuses to start without a matching `WORKER_OPERATOR`, so a second machine can't answer the same tasks twice (the worker lock covers only one machine).
+
+The worker finds tasks from two sources: `tasks list` (only tasks the signed-in human created) and the Coworker-key listing (every task assigned to the Coworker, including other customers' tasks).
+If one listing is refused, the worker logs it once and keeps serving from the other. For a single task it can't see, run `node --env-file=.env serve-task.mjs TASK_ID`.
+When the worker starts a customer's task, it immediately posts a comment linking to the dashboard, then posts the analysis as the result.
+
 ## Connect your Sokosumi Coworker
 
 Install Sokosumi CLI `1.0.4`. This starter uses its runtime adapter.

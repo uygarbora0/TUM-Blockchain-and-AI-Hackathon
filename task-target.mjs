@@ -20,3 +20,15 @@ export async function verifyRuntimeTask(client,taskId,target){
  assertTaskTarget(task,target);
  return client;
 }
+// `tasks list` is requester-scoped: it shows only tasks the signed-in human created, so other
+// customers' tasks never appear there. The Coworker-key listing covers every task assigned to
+// this Coworker. Merge both; one failing source must not stop the other from being served.
+export async function discoverTasks(sources,target,warn=()=>{}){
+ const seen=new Map();let failures=0;
+ for(const [label,list] of Object.entries(sources)){
+  try{for(const task of await list())if(task?.id&&!seen.has(task.id))seen.set(task.id,task);}
+  catch(error){failures++;warn(label,error);}
+ }
+ if(failures===Object.keys(sources).length)throw new Error('Every task listing failed');
+ return [...seen.values()].filter(task=>isTaskForTarget(task,target));
+}

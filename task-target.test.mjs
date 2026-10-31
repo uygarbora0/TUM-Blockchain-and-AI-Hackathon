@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {taskTarget,assertTaskTarget,verifyRuntimeTask} from './task-target.mjs';
+import {taskTarget,assertTaskTarget,verifyRuntimeTask,discoverTasks} from './task-target.mjs';
 
 test('task listing and runtime select the same Personal or organization Workspace',()=>{
  const personal=taskTarget({COWORKER_ID:'coworker'});
@@ -30,4 +30,17 @@ test('runtime reads confirm the current Task before comments or payment operatio
   await assert.rejects(verifyRuntimeTask(client,'task',target),/Runtime Task ID|configured Coworker and Workspace/);
   observed=previous;
  }
+});
+
+test('worker discovers other customers\' tasks through the Coworker listing and survives one failed source',async()=>{
+ const target={coworkerId:'coworker',organizationId:'organization'};
+ const own={id:'own',coworkerId:'coworker',organizationId:'organization'};
+ const customer={id:'customer',coworkerId:'coworker',organizationId:'organization'};
+ const foreign={id:'foreign',coworkerId:'another-coworker',organizationId:'organization'};
+ const tasks=await discoverTasks({requester:async()=>[own],coworker:async()=>[own,customer,foreign]},target);
+ assert.deepEqual(tasks.map(t=>t.id),['own','customer']);
+ const warnings=[];
+ const fallback=await discoverTasks({requester:async()=>[own],coworker:async()=>{throw new Error('403')}},target,label=>warnings.push(label));
+ assert.deepEqual(fallback.map(t=>t.id),['own']);assert.deepEqual(warnings,['coworker']);
+ await assert.rejects(discoverTasks({requester:async()=>{throw new Error('down')}},target),/Every task listing failed/);
 });

@@ -3,7 +3,8 @@
 // Why this exists: `sokosumi tasks list` is requester-scoped (you only see tasks YOU
 // created), so the continuous worker can never discover a teammate's task. The runtime
 // commands use the Coworker key and CAN act on any task assigned to your Coworker, but
-// only by a known ID. This helper takes that ID and runs the full start -> answer ->
+// only by a known ID. (npm run worker now also lists tasks with the Coworker key; use this
+// helper when that listing is refused or for a one-off task.) This helper takes that ID and runs the full start -> answer ->
 // complete cycle, so you can serve a teammate on request:
 //
 //   node --env-file=.env serve-task.mjs <TASK_ID>
@@ -12,6 +13,8 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { answer } from './client.mjs';
+import { dashboardWelcome } from './guardian/job.mjs';
+import { loadSokosumiRuntime } from './sokosumi-runtime.mjs';
 import { taskTarget } from './task-target.mjs';
 
 const taskId = process.argv[2];
@@ -25,6 +28,11 @@ const cli = args => JSON.parse(execFileSync('sokosumi', ['--preprod', ...args, '
 const started = cli(['runtime', 'start', taskId, ...target.runtimeArgs, '--coworker-id', id]);
 const input = started.description;
 console.log('started:', taskId, '| input:', JSON.stringify(input).slice(0, 80));
+
+// Hand the customer the dashboard link straight away, before the analysis.
+const { readRuntimeCredential, createCoworkerHttpClient, createTaskEvent } = await loadSokosumiRuntime();
+const runtime = createCoworkerHttpClient({ apiKey: readRuntimeCredential(id) });
+await createTaskEvent(runtime, taskId, { comment: dashboardWelcome() }, AbortSignal.timeout(30000));
 
 // 2) Produce the answer with the same engine the worker uses (deterministic or model).
 const result = await answer(input, `.local/${taskId}-session.json`);

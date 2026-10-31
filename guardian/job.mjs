@@ -10,7 +10,11 @@ export function withDashboardCta(message) {
  const text = String(message ?? '').trimEnd();
  return text.includes(url) ? text : `${text}\n\n→ Review and act on your position in the Liquidation Guardian dashboard: ${url}`;
 }
-export const GUARDIAN_HELP = `Liquidation Guardian checks a borrowing position and calculates rescue options. It cannot move funds.
+// Posted as a Task comment the moment the worker starts a customer's task, before any analysis.
+export const dashboardWelcome = () => `Liquidation Guardian has started on your task. Your result will follow here.
+
+→ Open the Liquidation Guardian dashboard to connect your Preprod wallet, open a loan and start your own guardian agent: ${dashboardUrl()}`;
+export const GUARDIAN_HELP =`Liquidation Guardian checks a borrowing position and calculates rescue options. It cannot move funds.
 
 Send "guardian demo" for a labelled price-drop simulation, or send JSON with {"position": {...}, "policy": {...}}. The position must include id, label, protocol, network, collateral (symbol, amount, priceUsd, liquidationThreshold), debt (symbol, amount, priceUsd), reserve (collateral and debt quantities), and priceUpdatedAt (an ISO timestamp). Policy is optional.
 
