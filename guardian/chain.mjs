@@ -21,8 +21,6 @@ const AGENT_FLOOR = 6n * ADA;
 const OPERATOR_FLOOR = 8n * ADA;
 // A customer's agent pays a shared oracle refresh only above this, so its own rescue fees stay covered.
 const ORACLE_PAYER_FLOOR = AGENT_FLOOR + ADA;
-const AGENT_TOP_UP = 15n * ADA;
-const OPERATOR_TOP_UP = 10n * ADA;
 // The vault keeps this much so its continuing output stays above min-UTxO.
 const VAULT_KEEP = 2n * ADA;
 export const KEY_HASH = /^[0-9a-f]{56}$/;
@@ -434,25 +432,17 @@ export class GuardianChain {
   }
 
   /**
-   * Top up this owner's agent fee wallet and, while the oracle is not yet
-   * deployed, the oracle operator. The agent wallet pays the agent's rescues and,
+   * Top up this owner's own agent fee wallet. It pays the agent's rescues and,
    * in turn with the other running customers, the shared oracle refreshes.
    */
-  buildFund(wallet) {
+  buildFundAgent(wallet) {
     return this.serial(async () => {
       const lucid = await this.lucid();
       const agent = this.agentFor(wallet.ownerKeyHash);
-      // Before the oracle exists, one transaction funds both: the operator needs ADA only to deploy it,
-      // once (refreshes are paid by customers). Afterwards only a low agent wallet is topped up.
-      const deployed = Boolean(await this.readOracle(lucid));
-      const agentAmount = !deployed || sum(await lucid.utxosAt(agent.address)) < ORACLE_PAYER_FLOOR ? AGENT_TOP_UP : 0n;
-      const operatorAmount = deployed ? 0n : OPERATOR_TOP_UP;
-      if (!agentAmount) throw new GuardianError('Your agent fee wallet is already funded.', 409);
+      if (sum(await lucid.utxosAt(agent.address)) >= ORACLE_PAYER_FLOOR) throw new GuardianError('Your agent fee wallet is already funded.', 409);
       await this.useWallet(lucid, wallet);
-      let tx = lucid.newTx();
-      if (agentAmount) tx = tx.pay.ToAddress(agent.address, { lovelace: agentAmount });
-      if (operatorAmount) tx = tx.pay.ToAddress(this.operator.address, { lovelace: operatorAmount });
-      return { ...this.remember('fund', await tx.complete()), agent: agentAmount.toString(), operator: operatorAmount.toString() };
+      const tx = await lucid.newTx().pay.ToAddress(agent.address, { lovelace: 15n * ADA }).complete();
+      return { ...this.remember('fund-agent', tx), agent: (15n * ADA).toString() };
     });
   }
 

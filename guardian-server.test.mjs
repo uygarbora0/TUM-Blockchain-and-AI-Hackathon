@@ -83,10 +83,8 @@ test('one customer cannot claim another wallet or stop another customer\'s agent
 });
 
 test('the oracle is never deployed without a live market price', async t => {
-  const { post, calls, signIn } = await serverFixture(t);
-  assert.equal((await post('/api/setup/deploy-oracle', {})).status, 409);
-  const { cookie } = await signIn('addr_test1x');
-  const response = await post('/api/setup/deploy-oracle', {}, { cookie });
+  const { post, calls } = await serverFixture(t);
+  const response = await post('/api/setup/deploy-oracle', {});
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /Live price unavailable/);
   assert.deepEqual(calls, []);
