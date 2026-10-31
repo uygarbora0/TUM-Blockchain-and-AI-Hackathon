@@ -7,7 +7,7 @@ import {reply} from './comments.mjs';
 import {createPaidAdapter,isPaidReady} from './paid-task.mjs';
 import {loadSokosumiRuntime} from './sokosumi-runtime.mjs';
 import {taskTarget,discoverTasks} from './task-target.mjs';
-import {runGuardianJob,dashboardUrl,dashboardWelcome} from './guardian/job.mjs';
+import {runGuardianJob,dashboardUrl} from './guardian/job.mjs';
 import {validatePaidWorkerMode,validateWorkerOperator,isLoopbackUrl} from './guardian/worker-config.mjs';
 validateWorkerOperator(process.env.WORKER_OPERATOR,userInfo().username);
 const target=taskTarget();
@@ -17,17 +17,10 @@ const releaseLock=acquireWorkerLock();
 process.once('exit',releaseLock);
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>{releaseLock();process.exit(0)});
 function cli(args){return JSON.parse(execFileSync('sokosumi',['--preprod',...args,'--json'],{encoding:'utf8',timeout:30000,maxBuffer:4*1024*1024}));}
-const {readRuntimeCredential,createCoworkerHttpClient,fetchTasks,createTaskEvent}=await loadSokosumiRuntime();
+const {readRuntimeCredential,createCoworkerHttpClient,fetchTasks}=await loadSokosumiRuntime();
 const runtime=createCoworkerHttpClient({apiKey:readRuntimeCredential(id)});
 const warned=new Set();
 function warnOnce(label,error){const key=`${label}:${error.message}`;if(!warned.has(key)){warned.add(key);console.warn(`Task listing (${label}) failed; continuing with the other source:`,error.message.slice(0,200));}}
-async function welcome(t,state,journal){
- if(state.welcome)return state;
- state={...state,welcome:'pending'};writeFileSync(journal,JSON.stringify(state),{mode:0o600});
- try{await createTaskEvent(runtime,t.id,{comment:dashboardWelcome()},AbortSignal.timeout(30000));state={...state,welcome:'posted'};console.log('Dashboard link sent',t.id);}
- catch(e){state={...state,welcome:'failed'};console.error('Dashboard link not sent',t.id,e.message.slice(0,200));}
- writeFileSync(journal,JSON.stringify(state),{mode:0o600});return state;
-}
 if(modelConfigured())await client.health();
 if(isLoopbackUrl(dashboardUrl()))console.warn(`DASHBOARD_URL is ${dashboardUrl()}; customers cannot open it. Set it to the public dashboard URL.`);
 const paid=await createPaidAdapter({target,answer,save:async(taskId,state)=>writeFileSync(`.local/${taskId}.json`,JSON.stringify(state),{mode:0o600})});
@@ -43,7 +36,6 @@ while(true){
  const journal=`.local/${t.id}.json`,resultFile=`.local/${t.id}.txt`;
  let state=existsSync(journal)?JSON.parse(readFileSync(journal,'utf8')):{};
  if(t.status==='READY'&&!state.phase){writeFileSync(journal,JSON.stringify({phase:'starting'}),{mode:0o600});const started=cli(['runtime','start',t.id,...target.runtimeArgs,'--coworker-id',id]);state={phase:'started',input:started.description};writeFileSync(journal,JSON.stringify(state),{mode:0o600});console.log('Started',t.id);}
- if(state.phase==='started'&&!state.paid)state=await welcome(t,state,journal);
  if(state.paid&&!paidEnabled)continue;
  if(state.paid||(state.phase==='started'&&paidEnabled)){
  if(!state.paid&&!runGuardianJob(state.input)&&!modelConfigured())throw Error('Paid analysis requires a position JSON object or "guardian demo" when no model is configured');
