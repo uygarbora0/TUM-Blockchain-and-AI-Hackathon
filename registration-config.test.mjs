@@ -12,9 +12,21 @@ test('registration author rejects missing or blank configuration', () => {
  assert.equal(registrationConfig.requireAgentAuthor('  Participant Team  '), 'Participant Team');
 });
 test('registration uses the configured loopback port', () => {
- assert.equal(registrationUrl('32123'), 'http://127.0.0.1:32123');
- assert.equal(registrationUrl(), 'http://127.0.0.1:21950');
- for (const value of ['0','65536','abc','21950.5','']) assert.throws(() => registrationUrl(value));
+ const saved = process.env.AGENT_PUBLIC_URL;
+ delete process.env.AGENT_PUBLIC_URL;
+ try {
+  assert.equal(registrationUrl('32123'), 'http://127.0.0.1:32123');
+  assert.equal(registrationUrl(), 'http://127.0.0.1:21950');
+  for (const value of ['0','65536','abc','21950.5','']) assert.throws(() => registrationUrl(value));
+ } finally { if (saved !== undefined) process.env.AGENT_PUBLIC_URL = saved; }
+});
+test('registration prefers AGENT_PUBLIC_URL when set', () => {
+ const saved = process.env.AGENT_PUBLIC_URL;
+ process.env.AGENT_PUBLIC_URL = 'https://agent.example.ngrok-free.dev/';
+ try {
+  assert.equal(registrationUrl('32123'), 'https://agent.example.ngrok-free.dev');
+  assert.equal(registrationUrl(), 'https://agent.example.ngrok-free.dev');
+ } finally { if (saved === undefined) delete process.env.AGENT_PUBLIC_URL; else process.env.AGENT_PUBLIC_URL = saved; }
 });
 test('saved key requires its private unmasked token', () => {
  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'registration-test-'));

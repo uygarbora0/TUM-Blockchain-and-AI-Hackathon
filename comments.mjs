@@ -16,7 +16,12 @@ export async function reply(task){
  const sessionFile=`.local/${taskId}-session.json`;
  if(!existsSync(sessionFile))return;
  let sessionState=JSON.parse(readFileSync(sessionFile,'utf8'));
- for(const event of events.filter(e=>e.actor?.type==='user'&&typeof e.comment==='string'&&e.comment.trim())){
+ // The initial task input is already answered by the main worker flow and posted as the
+ // result. Only user comments posted AFTER the Coworker's first response are genuine
+ // follow-ups; replying to the initial input would duplicate the result.
+ const firstCoworkerResponse=events.findIndex(e=>e.actor?.type==='coworker'&&typeof e.comment==='string'&&e.comment.trim());
+ const followUps=firstCoworkerResponse===-1?[]:events.slice(firstCoworkerResponse+1);
+ for(const event of followUps.filter(e=>e.actor?.type==='user'&&typeof e.comment==='string'&&e.comment.trim())){
  if(state[event.id])continue;
  state[event.id]='model-pending';writeFileSync(p,JSON.stringify(state),{mode:0o600});
  let message,calculated;
