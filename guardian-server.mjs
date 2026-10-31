@@ -73,6 +73,7 @@ export function createGuardianServer({ chain, agents, market }) {
   };
   const needWallet = session => { if (!session?.wallet) throw new GuardianError('Connect your wallet first.', 409); return session.wallet; };
   const myAgent = session => agents.get(needWallet(session).ownerKeyHash);
+  const transactionWallet = (body, session) => chain.transactionWallet(needWallet(session), body.walletContext);
   const freshPrice = async () => {
     const quote = await livePrice();
     if (!quote.ok) throw new GuardianError(`Live price unavailable: ${quote.reason}`, 503);
@@ -102,16 +103,16 @@ export function createGuardianServer({ chain, agents, market }) {
       return status(session);
     },
     '/api/wallet/disconnect': async (_, session) => { if (session) session.wallet = null; return status(session); },
-    '/api/setup/fund-agent': (_, session) => chain.buildFundAgent(needWallet(session)),
+    '/api/setup/fund-agent': (body, session) => chain.buildFundAgent(transactionWallet(body, session)),
     '/api/setup/deploy-oracle': async () => chain.deployOracle(await freshPrice()),
     // Any signed-in customer can refresh the shared price, paying from their own wallet.
-    '/api/oracle/publish': async (_, session) => chain.buildPublishPrice(needWallet(session), await freshPrice()),
-    '/api/loan/open': (body, session) => chain.buildOpenLoan(needWallet(session), body),
-    '/api/loan/close': (_, session) => chain.buildCloseLoan(needWallet(session)),
-    '/api/vault/deposit': (body, session) => chain.buildDeposit(needWallet(session), body),
-    '/api/vault/withdraw': (_, session) => chain.buildWithdraw(needWallet(session)),
+    '/api/oracle/publish': async (body, session) => chain.buildPublishPrice(transactionWallet(body, session), await freshPrice()),
+    '/api/loan/open': (body, session) => chain.buildOpenLoan(transactionWallet(body, session), body),
+    '/api/loan/close': (body, session) => chain.buildCloseLoan(transactionWallet(body, session)),
+    '/api/vault/deposit': (body, session) => chain.buildDeposit(transactionWallet(body, session), body),
+    '/api/vault/withdraw': (body, session) => chain.buildWithdraw(transactionWallet(body, session)),
     // Stop the agent first so it cannot spend the vault or its fee wallet while the owner signs.
-    '/api/revoke': async (_, session) => { const agent = myAgent(session); if (agent.state.running) agent.stop(); return chain.buildRevokeAll(needWallet(session)); },
+    '/api/revoke': async (body, session) => { const wallet = transactionWallet(body, session); const agent = myAgent(session); if (agent.state.running) agent.stop(); return chain.buildRevokeAll(wallet); },
     '/api/tx/submit': body => chain.submitOwner(body.txCbor, body.witnessSet),
     '/api/agent/start': (_, session) => agents.start(needWallet(session)),
     '/api/agent/stop': async (_, session) => { const agent = myAgent(session); agent.stop(); return agent.snapshot(); },

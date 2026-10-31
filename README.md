@@ -68,6 +68,9 @@ Each customer has their own agent: its own key and fee wallet, policy, activity 
 A customer's mandate names only their agent's key, so no agent can spend another customer's vault.
 Several customers can use the dashboard at once, each in their own browser (or browser profile):
 every browser gets its own session, and a session can only see and control the wallet that signed in to it.
+Before each wallet transaction, the dashboard checks the selected account again and sends the wallet's current spendable inputs.
+The server builds from inputs present in both the wallet and chain views. If you switch accounts, disconnect and reconnect;
+if the wallet is still syncing after a transaction, wait for confirmation before the next setup step.
 Agents run side by side; signing in or stopping an agent never affects another customer.
 Each running agent costs about two Blockfrost reads a minute, plus two for the shared oracle and the dashboards' polling,
 so plan the Blockfrost tier for the number of customers (the free 50,000 requests a day covers roughly ten).

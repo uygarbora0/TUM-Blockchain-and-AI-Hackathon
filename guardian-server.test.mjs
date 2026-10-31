@@ -8,6 +8,7 @@ async function serverFixture(t) {
   const calls = [];
   const chain = {
     network: 'Preprod',
+    transactionWallet: wallet => wallet,
     overview: async wallet => ({ wallet }),
     wallet: body => { if (!body.changeAddress) throw new GuardianError('Wallet address is invalid.'); return { address: body.changeAddress, addresses: [body.changeAddress], ownerKeyHash: body.changeAddress.slice(-1).repeat(56) }; },
     // Stands in for CIP-30 signData: a wallet "signs" by echoing its payload.

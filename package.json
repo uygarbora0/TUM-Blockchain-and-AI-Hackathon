@@ -27,5 +27,8 @@
   "overrides": {
     "libsodium-wrappers-sumo": "0.7.15",
     "libsodium-sumo": "0.7.15"
+  },
+  "devDependencies": {
+    "@masumi_network/sokosumi": "^1.0.4"
   }
 }

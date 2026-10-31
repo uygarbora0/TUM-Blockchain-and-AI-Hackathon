@@ -1,6 +1,8 @@
 // Guardian dashboard. Everything shown comes from /api/status, which reads
 // Cardano Preprod and live exchange prices. Owner transactions are built by
 // the server, signed by the CIP-30 wallet here, and submitted by the server.
+import { currentWallet, assertWalletAccount } from './wallet-session.js';
+
 const icons = {
   shield: '<path d="M12 3 20 6.5V12c0 5-8 9-8 9s-8-4-8-9V6.5L12 3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
@@ -24,6 +26,7 @@ const views = { setup: 'Setup', monitor: 'Live monitor' };
 let status = null;
 let api = null;
 let walletKey = null;
+let connectedAddress = null;
 let busy = false;
 let policyDirty = false;
 
@@ -97,6 +100,7 @@ function wallets() {
 }
 
 async function connect(key) {
+  if (busy) return;
   busy = true; render();
   try {
     const wallet = window.cardano?.[key];
@@ -113,36 +117,51 @@ async function connect(key) {
       status = await request('/api/wallet/connect', { signature: signed.signature, key: signed.key });
     }
     walletKey = key;
+    connectedAddress = changeAddress;
     remember(key);
     showError('');
     toast(`${wallet.name} connected.`);
   } catch (error) {
     api = null;
+    connectedAddress = null;
     const declined = error?.code === 3 || /declin|reject|cancel/i.test(error?.info || error?.message || '');
     showError(declined ? 'You declined the sign-in signature. It only proves you own this wallet and moves no funds.' : error?.info || error?.message || 'The wallet refused the connection.');
   } finally { busy = false; render(); }
 }
 
 async function disconnect() {
-  api = null; walletKey = null; remember(null);
+  if (busy) return;
+  api = null; walletKey = null; connectedAddress = null; remember(null);
   status = await request('/api/wallet/disconnect', {}).catch(() => status);
   render();
 }
 
 // Build on the server, sign in the wallet, submit through the server.
 async function ownerTransaction(path, body, label) {
+  if (busy) return;
   if (!api) return showError('Connect your wallet first.');
   busy = true; render();
   try {
-    const built = await request(path, body);
-    const witnessSet = await api.signTx(built.txCbor, true);
+    const expectedAddress = connectedAddress;
+    const signer = await currentWallet(window.cardano[walletKey], expectedAddress);
+    // Build only from inputs the extension currently knows how to sign. The
+    // server checks these against its own chain data, never trusting balances.
+    const utxos = await signer.getUtxos();
+    if (!utxos?.length) throw new Error('Your wallet has no spendable inputs yet. Wait for it to sync, then try again.');
+    const built = await request(path, { ...body, walletContext: { changeAddress: expectedAddress, utxos } });
+    await assertWalletAccount(signer, expectedAddress);
+    const witnessSet = await signer.signTx(built.txCbor, true);
     const { txHash } = await request('/api/tx/submit', { txCbor: built.txCbor, witnessSet });
     showResult('ok', `${escapeHtml(label)} submitted: ${link('transaction', txHash)}. It shows here once the block confirms, usually within a minute.`);
     showError('');
     followUp();
   } catch (error) {
+    const message = error?.info || error?.message || 'The transaction failed.';
     const declined = error?.code === 2 || /declin|reject|cancel/i.test(error?.info || error?.message || '');
-    showResult(declined ? 'warn' : 'bad', escapeHtml(declined ? 'You declined the signature. Nothing was submitted.' : error?.info || error?.message || 'The transaction failed.'));
+    const signingFailure = /secret key|proof generation/i.test(message);
+    showResult(declined ? 'warn' : 'bad', escapeHtml(signingFailure
+      ? 'The wallet could not sign this transaction. Check the selected account and Preprod network, wait for wallet sync, then disconnect and reconnect here. Nothing was submitted by this attempt.'
+      : declined ? 'You declined the signature. Nothing was submitted.' : message));
   } finally { busy = false; render(); }
 }
 

@@ -248,11 +248,43 @@ export class GuardianChain {
   }
 
   async walletUtxos(lucid, wallet) {
-    return (await Promise.all(wallet.addresses.map(a => lucid.utxosAt(a)))).flat();
+    const utxos = (await Promise.all(wallet.addresses.map(a => lucid.utxosAt(a)))).flat();
+    return wallet.inputRefs ? utxos.filter(u => wallet.inputRefs.has(`${u.txHash}#${u.outputIndex}`)) : utxos;
+  }
+
+  /** Bind this build to the current browser account and its spendable inputs. */
+  transactionWallet(wallet, context) {
+    if (!context) throw new GuardianError('Reload the dashboard and reconnect your wallet before signing.', 409);
+    const current = this.wallet({ changeAddress: context.changeAddress });
+    if (current.address !== wallet.address) throw new GuardianError('The browser wallet does not match this session. Disconnect and reconnect your wallet.', 409);
+    if (!Array.isArray(context.utxos) || !context.utxos.length || context.utxos.length > 500) throw new GuardianError('Wallet spendable inputs are missing or too numerous. Reconnect your wallet.');
+    const inputRefs = new Set();
+    const addresses = new Set(wallet.addresses);
+    for (const cbor of context.utxos) {
+      try {
+        if (typeof cbor !== 'string' || !/^[0-9a-f]+$/i.test(cbor)) throw new Error();
+        const unspent = CML.TransactionUnspentOutput.from_cbor_hex(cbor);
+        const input = unspent.input();
+        const address = unspent.output().address().to_bech32(undefined);
+        const details = getAddressDetails(address);
+        if (details.networkId !== (this.network === 'Mainnet' ? 1 : 0) || details.paymentCredential?.type !== 'Key') throw new Error();
+        // HD wallets can move change to addresses absent from the sign-in
+        // snapshot. Discover them from CIP-30, but fetch values and unspent
+        // status from the provider; the supplied output is never trusted.
+        addresses.add(address);
+        inputRefs.add(`${input.transaction_id().to_hex()}#${input.index()}`);
+      } catch { throw new GuardianError('Wallet returned an invalid spendable input. Reconnect your wallet.'); }
+    }
+    // Request-local snapshot: never replace another request's session wallet.
+    return { ...wallet, addresses: [...addresses], inputRefs };
   }
 
   async useWallet(lucid, wallet) {
-    lucid.selectWallet.fromAddress(wallet.address, await this.walletUtxos(lucid, wallet));
+    const utxos = await this.walletUtxos(lucid, wallet);
+    // fromAddress falls back to provider inputs on an empty list, which would
+    // reintroduce inputs the browser wallet does not recognize.
+    if (!utxos.length) throw new GuardianError('Wallet and chain inputs are not synchronized. Wait for pending transactions to confirm, then reconnect your wallet.', 409);
+    lucid.selectWallet.fromAddress(wallet.address, utxos);
   }
 
   /** `cosignKey` is a server-held key (agent or operator) that also signs at submission. */
